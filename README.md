@@ -1438,18 +1438,46 @@ Open each agent's chat in Telegram and send `/start`. They'll respond with their
 
 ### What each agent gets automatically
 
-Every agent inherits all of ClaudeClaw's features with zero extra config:
+Every agent runs the exact same `createBot()` code path as the main bot. There's no "lite" agent mode -- they inherit everything with zero extra config:
 
 - Voice notes (STT via Groq, TTS via ElevenLabs/Gradium/macOS say)
 - Photo, document, and video handling (including Gemini video analysis)
 - File sending (`[SEND_FILE:...]` markers)
-- All slash commands: /newchat, /respin, /voice, /model, /memory, /stop, /wa, /slack
-- All global skills from `~/.claude/skills/`
+- All built-in slash commands: /newchat, /respin, /voice, /model, /memory, /stop, /wa, /slack
+- All global skills from `~/.claude/skills/` (auto-discovered and registered in each bot's Telegram command menu)
 - Memory system (FTS5 search, salience decay) -- isolated per agent
 - Context window tracking and compaction warnings
 - WhatsApp and Slack integration
 
-When you add features to the main bot, rebuild once (`npm run build`) and every agent gets them on next restart.
+**Inheritance works like this:** agents and the main bot share the same compiled codebase (`dist/`), the same SQLite database, the same `.env` secrets, and the same global skills directory (`~/.claude/skills/`). Each agent just has its own Telegram bot token, its own `CLAUDE.md` personality, and its own session state.
+
+This means when you:
+- **Install a new skill** to `~/.claude/skills/` -- every agent picks it up on restart, including its `/slash` command in Telegram's menu
+- **Change code and rebuild** (`npm run build`) -- every agent picks up the changes on restart
+- **Add a new `.env` variable** -- every agent can use it on restart
+
+**Restarting agents after changes:**
+
+Agents load code and skills at startup. Rebuilding `dist/` or adding skills doesn't hot-reload running processes. You need to restart:
+
+```bash
+# If running in terminals: Ctrl+C each agent, then restart
+npm start -- --agent comms
+npm start -- --agent content
+
+# If running as background services: uninstall and reinstall
+bash scripts/agent-service.sh uninstall comms
+bash scripts/agent-service.sh install comms
+
+# Nuclear option: kill all agents and restart
+pkill -f "dist/index.js --agent"
+npm start -- --agent comms &
+npm start -- --agent content &
+npm start -- --agent ops &
+npm start -- --agent research &
+```
+
+**Note:** After restarting, Telegram may cache the old command menu for a few minutes. Force-close and reopen Telegram on your phone to see updated `/` commands immediately.
 
 ### Obsidian auto-injection
 
