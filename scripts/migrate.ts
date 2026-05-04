@@ -193,6 +193,49 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Pre-migration backup. A migration that crashes mid-run leaves a
+  // half-applied schema; without a backup the operator's only recovery
+  // path is restoring from whatever stale dump they happen to have.
+  // Snapshot store/claudeclaw.db to store/claudeclaw.db.pre-{version}.bak
+  // with chmod 0600 (it's plaintext from the encrypted DB's POV but the
+  // file itself is still secret). Rotation keeps the last 3 backups so
+  // disk doesn't grow unbounded.
+  const dbPath = path.join(STORE_DIR, 'claudeclaw.db');
+  if (fs.existsSync(dbPath)) {
+    const targetVersion = pendingVersions[0] ?? 'unknown';
+    const backupPath = path.join(STORE_DIR, `claudeclaw.db.pre-${targetVersion}.bak`);
+    try {
+      fs.copyFileSync(dbPath, backupPath);
+      fs.chmodSync(backupPath, 0o600);
+      // Also copy the WAL file if present so the backup represents a
+      // consistent snapshot of recent writes.
+      const walPath = `${dbPath}-wal`;
+      if (fs.existsSync(walPath)) {
+        fs.copyFileSync(walPath, `${backupPath}-wal`);
+        fs.chmodSync(`${backupPath}-wal`, 0o600);
+      }
+      console.log(`Pre-migration backup → ${path.relative(PROJECT_ROOT, backupPath)} (chmod 0600)`);
+    } catch (e) {
+      console.log(`⚠️  Could not create pre-migration backup: ${e instanceof Error ? e.message : e}`);
+      const ok = await prompt('Proceed without backup? [y/N] ');
+      if (ok.toLowerCase() !== 'y' && ok.toLowerCase() !== 'yes') {
+        console.log('Aborting.');
+        process.exit(1);
+      }
+    }
+    // Rotation: keep the 3 most recent .bak files, remove older.
+    try {
+      const baks = fs.readdirSync(STORE_DIR)
+        .filter((f) => f.startsWith('claudeclaw.db.pre-') && f.endsWith('.bak'))
+        .map((f) => ({ f, mtime: fs.statSync(path.join(STORE_DIR, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const old of baks.slice(3)) {
+        fs.rmSync(path.join(STORE_DIR, old.f), { force: true });
+        fs.rmSync(path.join(STORE_DIR, `${old.f}-wal`), { force: true });
+      }
+    } catch { /* rotation failure is non-fatal */ }
+  }
+
   // Run migrations in order
   for (const version of pendingVersions) {
     const filenames = registry.migrations[version];
@@ -208,10 +251,12 @@ async function main(): Promise<void> {
         console.log(`[ ${filename} ] ✗  ${msg}`);
         console.log('\nMigration failed. To recover:');
         console.log('  1. Investigate the error above and identify the root cause.');
-        console.log('  2. Reset your working directory to a clean state:');
+        console.log('  2. Restore the pre-migration backup if needed:');
+        console.log(`       cp store/claudeclaw.db.pre-*.bak store/claudeclaw.db`);
+        console.log('  3. Reset your working directory to a clean state:');
         console.log('       git reset --hard && git clean -fd');
-        console.log('  3. Apply the necessary fix (to the migration script or your environment).');
-        console.log('  4. Run `npm run migrate` again.');
+        console.log('  4. Apply the necessary fix (to the migration script or your environment).');
+        console.log('  5. Run `npm run migrate` again.');
         process.exit(1);
       }
     }

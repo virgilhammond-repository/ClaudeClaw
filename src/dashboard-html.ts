@@ -1,4 +1,5 @@
-export function getDashboardHtml(token: string, chatId: string): string {
+export function getDashboardHtml(token: string, chatId: string, warroomEnabled = false): string {
+const WARROOM_ENABLED = warroomEnabled;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -207,6 +208,97 @@ export function getDashboardHtml(token: string, chatId: string): string {
     </div>
   </div>
   <div id="agents-container" class="flex flex-wrap gap-3"></div>
+</div>
+
+<!-- War Room Quick Access (only shown when WARROOM_ENABLED) -->
+${WARROOM_ENABLED ? `<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1e3a5f;background:linear-gradient(135deg,#0f172a 0%,#1a1a1a 100%)" onclick="window.location.href='/warroom?token=${token}&chatId=${chatId}'">
+  <div>
+    <div style="font-size:14px;font-weight:600;color:#60a5fa">War Room</div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px">Voice standup with your agent team</div>
+  </div>
+  <div style="font-size:20px;color:#3b82f6">&#127908;</div>
+</div>` : ''}
+
+<!-- War Room Voice Settings (only shown when WARROOM_ENABLED) -->
+${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <div>
+      <div style="font-size:14px;font-weight:600;color:#a5b4fc">War Room Voices</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px">Per-agent Gemini Live voice config. Main keeps Charon unless you change it.</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button id="voicesSaveBtn" onclick="saveVoices()" disabled style="background:#374151;color:#9ca3af;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:not-allowed">Save</button>
+      <button id="voicesApplyBtn" onclick="applyVoices()" style="background:#4f46e5;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer">Save &amp; Apply</button>
+    </div>
+  </div>
+  <div id="voicesRows" style="display:flex;flex-direction:column;gap:6px">
+    <div style="font-size:11px;color:#6b7280;padding:8px 0">Loading voices...</div>
+  </div>
+  <div id="voicesStatus" style="font-size:11px;color:#6b7280;margin-top:8px;min-height:14px"></div>
+</div>` : ''}
+
+<!-- Live Meetings: two modes sharing one card and one sessions list -->
+<div class="card" id="meet-card" style="border:1px solid #1e3a5f">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div>
+      <div style="font-size:14px;font-weight:600;color:#a5b4fc">Live Meetings</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px">Send an agent into a Google Meet (avatar mode) or spin up a Daily.co room.</div>
+    </div>
+    <button onclick="openNewMeet()" style="background:#1a1a1a;color:#60a5fa;border:1px solid #1e3a5f;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer">New Meet &#8599;</button>
+  </div>
+
+  <!-- Mode 1: Pika avatar (existing, preserved) -->
+  <div style="padding:10px 12px;background:#0b0f1a;border:1px solid #1e293b;border-radius:8px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:12px;font-weight:600;color:#60a5fa">Avatar mode &middot; Pika</div>
+      <div style="font-size:10px;color:#6b7280">Real-time AI avatar, ~$0.28/min, Pika-rendered face &amp; voice</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="meet-agent-select" style="background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;min-width:110px">
+        <option value="main">Main</option>
+      </select>
+      <input type="text" id="meet-url-input" placeholder="Paste Meet URL, or leave empty to auto-read clipboard"
+        style="flex:1;min-width:220px;background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;font-family:ui-monospace,monospace">
+      <label style="display:flex;gap:5px;align-items:center;color:#9ca3af;font-size:11px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="meet-auto-brief" checked style="margin:0;accent-color:#4f46e5"> Auto-brief
+      </label>
+      <button onclick="sendAgentToMeet()" id="meet-send-btn"
+        style="background:#4f46e5;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">Send</button>
+    </div>
+    <div id="meet-status" style="font-size:11px;color:#6b7280;min-height:14px;margin-top:6px"></div>
+  </div>
+
+  <!-- Mode 2: Daily.co Pipecat pipeline -->
+  <div style="padding:10px 12px;background:#0a1410;border:1px solid #1a3b2b;border-radius:8px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:12px;font-weight:600;color:#34d399">Daily.co mode &middot; Pipecat + Gemini Live</div>
+      <div style="font-size:10px;color:#6b7280">Creates a Daily room, share the link with whoever. Sub-second latency, real tool calling.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="meet-daily-agent-select" style="background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;min-width:110px">
+        <option value="main">Main</option>
+      </select>
+      <select id="meet-daily-mode-select" style="background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;min-width:100px">
+        <option value="direct">Direct</option>
+        <option value="auto">Hand Up</option>
+      </select>
+      <label style="display:flex;gap:5px;align-items:center;color:#9ca3af;font-size:11px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="meet-daily-auto-brief" style="margin:0;accent-color:#10b981"> Auto-brief
+      </label>
+      <button onclick="createDailyRoom()" id="meet-daily-send-btn"
+        style="background:#10b981;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">Create room &amp; dispatch</button>
+    </div>
+    <div id="meet-daily-status" style="font-size:11px;color:#6b7280;min-height:14px;margin-top:6px"></div>
+    <div id="meet-daily-room-box" style="display:none;margin-top:8px;padding:8px 10px;background:#050b08;border:1px solid #1a3b2b;border-radius:6px;font-size:11px;color:#a7f3d0;font-family:ui-monospace,monospace;word-break:break-all">
+      <span id="meet-daily-room-url"></span>
+      <button id="meet-daily-copy-btn" onclick="copyDailyRoomUrl()" style="margin-left:8px;background:#10b981;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">Copy</button>
+    </div>
+  </div>
+
+  <div style="font-size:10px;color:#4b5563;text-transform:uppercase;letter-spacing:1px;margin:6px 2px">Active sessions</div>
+  <div id="meet-sessions" style="display:flex;flex-direction:column;gap:6px">
+    <div style="font-size:11px;color:#6b7280;padding:4px 0">No active sessions.</div>
+  </div>
 </div>
 
 <!-- Hive Mind Feed -->
@@ -952,6 +1044,439 @@ document.addEventListener('click', function(e) {
   document.querySelectorAll('.info-tip.active').forEach(t => t.classList.remove('active'));
 }, true);
 
+// ── War Room voice config ────────────────────────────────────────────
+// State lives on window so the edit tracking survives refreshAgents() cycles.
+window.__voicesState = { loaded: false, rows: [], catalog: [], dirty: new Set() };
+
+async function loadVoices() {
+  const rowsEl = document.getElementById('voicesRows');
+  if (!rowsEl) return;
+  try {
+    const data = await api('/api/warroom/voices');
+    if (!data || !data.ok) throw new Error((data && data.error) || 'failed');
+    window.__voicesState.rows = data.voices;
+    window.__voicesState.catalog = data.gemini_catalog;
+    window.__voicesState.dirty = new Set();
+    window.__voicesState.loaded = true;
+    renderVoices();
+  } catch (err) {
+    rowsEl.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0">Failed to load voices: ' + String(err).replace(/</g,'&lt;') + '</div>';
+  }
+}
+
+function renderVoices() {
+  const rowsEl = document.getElementById('voicesRows');
+  if (!rowsEl) return;
+  const { rows, catalog, dirty } = window.__voicesState;
+  const html = rows.map(function(r) {
+    const opts = catalog.map(function(v) {
+      const selected = v.name === r.gemini_voice ? ' selected' : '';
+      return '<option value="' + v.name + '"' + selected + '>' + v.name + ' (' + v.style + ')</option>';
+    }).join('');
+    const isDirty = dirty.has(r.agent);
+    const borderColor = isDirty ? '#6366f1' : 'rgba(255,255,255,0.05)';
+    const defaultBadge = r.is_default
+      ? '<span style="font-size:9px;color:#6b7280;margin-left:6px;padding:1px 5px;border:1px solid #374151;border-radius:3px">default</span>'
+      : '';
+    const dirtyBadge = isDirty
+      ? '<span style="font-size:9px;color:#818cf8;margin-left:6px;padding:1px 5px;border:1px solid #4f46e5;border-radius:3px;background:rgba(79,70,229,0.1)">unsaved</span>'
+      : '';
+    return (
+      '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.02);border:1px solid ' + borderColor + ';border-radius:6px">' +
+        '<div style="width:80px;font-size:12px;font-weight:600;color:#d1d5db;text-transform:uppercase;letter-spacing:0.5px">' + r.agent + defaultBadge + dirtyBadge + '</div>' +
+        '<select data-agent="' + r.agent + '" onchange="onVoiceChange(this)" style="flex:1;max-width:280px;background:#0f172a;color:#e5e7eb;border:1px solid #1e293b;border-radius:4px;padding:4px 8px;font-size:12px;font-family:inherit">' + opts + '</select>' +
+        '<div style="flex:1;min-width:0;font-size:10px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.name || '') + '</div>' +
+      '</div>'
+    );
+  }).join('');
+  rowsEl.innerHTML = html || '<div style="font-size:11px;color:#6b7280;padding:8px 0">No agents found.</div>';
+
+  // Save button enabled only when there are dirty changes
+  const saveBtn = document.getElementById('voicesSaveBtn');
+  if (saveBtn) {
+    if (dirty.size > 0) {
+      saveBtn.disabled = false;
+      saveBtn.style.background = '#4f46e5';
+      saveBtn.style.color = '#fff';
+      saveBtn.style.cursor = 'pointer';
+    } else {
+      saveBtn.disabled = true;
+      saveBtn.style.background = '#374151';
+      saveBtn.style.color = '#9ca3af';
+      saveBtn.style.cursor = 'not-allowed';
+    }
+  }
+}
+
+function onVoiceChange(sel) {
+  const agent = sel.getAttribute('data-agent');
+  const newVoice = sel.value;
+  const row = window.__voicesState.rows.find(function(r) { return r.agent === agent; });
+  if (!row) return;
+  row.gemini_voice = newVoice;
+  row.is_default = false;
+  window.__voicesState.dirty.add(agent);
+  renderVoices();
+}
+
+async function saveVoices(applyAfter) {
+  const { rows, dirty } = window.__voicesState;
+  if (dirty.size === 0 && !applyAfter) return;
+  const updates = rows
+    .filter(function(r) { return dirty.has(r.agent) || applyAfter; })
+    .map(function(r) { return { agent: r.agent, gemini_voice: r.gemini_voice }; });
+  const statusEl = document.getElementById('voicesStatus');
+  statusEl.style.color = '#6b7280';
+  statusEl.textContent = 'Saving...';
+  try {
+    const res = await fetch(BASE + '/api/warroom/voices?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates: updates }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'save failed');
+    window.__voicesState.dirty = new Set();
+    statusEl.style.color = '#10b981';
+    statusEl.textContent = applyAfter ? 'Saved. Applying...' : 'Saved. Use "Save & Apply" to activate now.';
+    if (applyAfter) return true;
+    // Re-render so dirty badges clear
+    renderVoices();
+  } catch (err) {
+    statusEl.style.color = '#ef4444';
+    statusEl.textContent = 'Save failed: ' + String(err);
+    return false;
+  }
+}
+
+async function applyVoices() {
+  // Save any pending edits first, then kickstart main so warroom respawns
+  const statusEl = document.getElementById('voicesStatus');
+  const saveOk = await saveVoices(true);
+  if (saveOk === false) return;
+  try {
+    const res = await fetch(BASE + '/api/warroom/voices/apply?token=' + TOKEN, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'apply failed');
+    statusEl.style.color = '#10b981';
+    statusEl.textContent = 'Applied. War Room will be back up in ~7s.';
+    // Re-load after main has restarted so we see the new server-side state
+    setTimeout(function() { loadVoices(); }, 8000);
+  } catch (err) {
+    statusEl.style.color = '#ef4444';
+    statusEl.textContent = 'Apply failed: ' + String(err);
+  }
+}
+
+// Load voices on dashboard startup
+loadVoices();
+
+// ── Live Meetings (Pika video meeting bot) ────────────────────────
+// Lets the user pop open meet.google.com/new, then send any agent into the
+// meeting as a real-time AI avatar. Clipboard auto-read on first Send.
+//
+// IMPORTANT: This block is embedded inside a TypeScript template literal
+// (see getDashboardHtml), so regex literals and string escapes like \/
+// and \' get EATEN at template-literal evaluation time, producing broken
+// JS in the browser. We use plain string helpers instead of regex, and
+// event delegation instead of inline onclick handlers, to sidestep all
+// escape-sequence pitfalls.
+const MEET_URL_PREFIX = 'https://meet.google.com/';
+
+function isMeetUrl(s) {
+  return typeof s === 'string'
+    && s.indexOf(MEET_URL_PREFIX) === 0
+    && s.length > MEET_URL_PREFIX.length + 2;
+}
+
+function extractMeetUrl(text) {
+  // Kept intentionally simple: no regex, no backslash escapes, because
+  // everything in this function body is inside a TypeScript template
+  // literal where escape sequences get mangled. Meet's "copy meeting
+  // link" button puts a clean URL in the clipboard, so trim-then-match
+  // covers the whole happy path. Mixed content requires manual paste.
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  return isMeetUrl(trimmed) ? trimmed : null;
+}
+
+function openNewMeet() {
+  window.open('https://meet.google.com/new', '_blank', 'noopener');
+  const status = document.getElementById('meet-status');
+  if (status) {
+    status.style.color = '#60a5fa';
+    status.textContent = 'Meet opened. Start the meeting, copy the link, come back and click Send.';
+  }
+}
+
+async function loadMeetAgentOptions() {
+  // Populates the avatar + daily mode dropdowns from the /api/agents
+  // endpoint. Always includes 'main' at the top.
+  const selAvatar = document.getElementById('meet-agent-select');
+  const selDaily = document.getElementById('meet-daily-agent-select');
+  if (!selAvatar && !selDaily) return;
+  try {
+    const data = await api('/api/agents');
+    const ids = new Set(['main']);
+    if (data && Array.isArray(data.agents)) {
+      for (const a of data.agents) if (a && a.id) ids.add(a.id);
+    }
+    const sorted = ['main', ...[...ids].filter(function(x){ return x !== 'main'; }).sort()];
+    const optionsHtml = sorted.map(function(id) {
+      const label = id.charAt(0).toUpperCase() + id.slice(1);
+      return '<option value="' + id + '">' + label + '</option>';
+    }).join('');
+    if (selAvatar) selAvatar.innerHTML = optionsHtml;
+    if (selDaily) selDaily.innerHTML = optionsHtml;
+  } catch (e) { /* keep the default "Main" only option */ }
+}
+
+async function sendAgentToMeet() {
+  const agentSel = document.getElementById('meet-agent-select');
+  const urlInput = document.getElementById('meet-url-input');
+  const autoBrief = document.getElementById('meet-auto-brief').checked;
+  const btn = document.getElementById('meet-send-btn');
+  const status = document.getElementById('meet-status');
+
+  let meetUrl = (urlInput.value || '').trim();
+
+  // If the input is empty, try the clipboard. First time this runs the
+  // browser will show a permission prompt; once granted it's silent.
+  if (!meetUrl) {
+    try {
+      const clipText = await navigator.clipboard.readText();
+      const extracted = extractMeetUrl(clipText);
+      if (extracted) {
+        meetUrl = extracted;
+        urlInput.value = meetUrl;
+      }
+    } catch (e) {
+      // permission denied, clipboard empty, or unsupported
+    }
+  }
+
+  if (!meetUrl) {
+    status.style.color = '#f59e0b';
+    status.textContent = 'No Meet URL found. Paste one above, or grant clipboard permission and click Send again.';
+    return;
+  }
+
+  if (!isMeetUrl(meetUrl)) {
+    status.style.color = '#f59e0b';
+    status.textContent = 'That URL does not look like a Google Meet link.';
+    return;
+  }
+
+  const agent = agentSel.value;
+  btn.disabled = true;
+  btn.textContent = 'Dispatching...';
+  status.style.color = '#60a5fa';
+  status.textContent = autoBrief
+    ? 'Briefing ' + agent + ' and joining. This can take 30-90 seconds...'
+    : 'Joining as ' + agent + '...';
+
+  try {
+    const res = await fetch(BASE + '/api/meet/join?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agent, meet_url: meetUrl, auto_brief: autoBrief }),
+    });
+    const data = await res.json();
+    if (data && data.ok) {
+      status.style.color = '#10b981';
+      status.textContent = agent + ' is in the meeting. Admit them in the Meet tab.';
+      urlInput.value = '';
+      refreshMeetSessions();
+    } else {
+      status.style.color = '#ef4444';
+      let errMsg = (data && (data.error || data.message)) || ('HTTP ' + res.status);
+      if (data && data.checkout_url) {
+        errMsg += ' (top up at ' + data.checkout_url + ')';
+      }
+      status.textContent = 'Failed: ' + errMsg;
+    }
+  } catch (err) {
+    status.style.color = '#ef4444';
+    status.textContent = 'Failed: ' + (err && err.message ? err.message : err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send';
+  }
+}
+
+var __lastDailyRoomUrl = '';
+async function createDailyRoom() {
+  // Daily.co mode. Creates a fresh room server-side and spawns a
+  // Pipecat agent in it. Returns the room URL which we display with
+  // a copy-to-clipboard button so the user can share it.
+  const agentSel = document.getElementById('meet-daily-agent-select');
+  const modeSel = document.getElementById('meet-daily-mode-select');
+  const autoBrief = document.getElementById('meet-daily-auto-brief').checked;
+  const btn = document.getElementById('meet-daily-send-btn');
+  const status = document.getElementById('meet-daily-status');
+  const roomBox = document.getElementById('meet-daily-room-box');
+  const roomUrlEl = document.getElementById('meet-daily-room-url');
+
+  const agent = agentSel.value;
+  const mode = modeSel.value;
+
+  btn.disabled = true;
+  btn.textContent = 'Creating room...';
+  status.style.color = '#34d399';
+  status.textContent = autoBrief
+    ? 'Briefing ' + agent + ', creating room, spawning Pipecat agent...'
+    : 'Creating Daily room and spawning ' + agent + '...';
+  roomBox.style.display = 'none';
+
+  try {
+    const res = await fetch(BASE + '/api/meet/join-daily?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agent, mode: mode, auto_brief: autoBrief }),
+    });
+    const data = await res.json();
+    if (data && data.ok) {
+      __lastDailyRoomUrl = data.room_url || '';
+      roomUrlEl.textContent = __lastDailyRoomUrl;
+      roomBox.style.display = 'block';
+      status.style.color = '#10b981';
+      status.textContent = agent + ' is in the room. Copy the link and share it.';
+      refreshMeetSessions();
+    } else {
+      status.style.color = '#ef4444';
+      const errMsg = (data && (data.error || data.message)) || ('HTTP ' + res.status);
+      status.textContent = 'Failed: ' + errMsg;
+    }
+  } catch (err) {
+    status.style.color = '#ef4444';
+    status.textContent = 'Failed: ' + (err && err.message ? err.message : err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create room & dispatch';
+  }
+}
+
+async function copyDailyRoomUrl() {
+  if (!__lastDailyRoomUrl) return;
+  const btn = document.getElementById('meet-daily-copy-btn');
+  try {
+    await navigator.clipboard.writeText(__lastDailyRoomUrl);
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(function() { btn.textContent = orig; }, 1500);
+    }
+  } catch (e) { /* clipboard blocked */ }
+}
+
+async function leaveMeetSession(sessionId) {
+  if (!sessionId) return;
+  const row = document.querySelector('[data-meet-session="' + sessionId + '"]');
+  if (row) row.style.opacity = '0.5';
+  try {
+    const res = await fetch(BASE + '/api/meet/leave?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    const data = await res.json();
+    const status = document.getElementById('meet-status');
+    if (data && data.ok) {
+      if (status) {
+        status.style.color = '#10b981';
+        status.textContent = 'Left the meeting.';
+      }
+    } else if (status) {
+      status.style.color = '#ef4444';
+      status.textContent = 'Leave failed: ' + ((data && data.error) || 'unknown');
+    }
+  } catch (e) { /* silent */ }
+  refreshMeetSessions();
+}
+
+function formatMeetElapsed(session) {
+  const start = session.joined_at || session.created_at;
+  if (!start) return '';
+  const secs = Math.floor(Date.now() / 1000) - start;
+  if (secs < 60) return secs + 's';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm';
+  const hrs = Math.floor(mins / 60);
+  return hrs + 'h ' + (mins % 60) + 'm';
+}
+
+async function refreshMeetSessions() {
+  const container = document.getElementById('meet-sessions');
+  if (!container) return;
+  try {
+    const data = await api('/api/meet/sessions');
+    const active = (data && data.active) || [];
+    if (active.length === 0) {
+      container.innerHTML = '<div style="font-size:11px;color:#6b7280;padding:4px 0">No active sessions.</div>';
+      return;
+    }
+    // Build rows via DOM APIs rather than innerHTML string concat so we
+    // can bind click handlers directly and avoid any quote-escaping
+    // landmines inside the surrounding TypeScript template literal.
+    container.innerHTML = '';
+    active.forEach(function(s) {
+      const row = document.createElement('div');
+      row.setAttribute('data-meet-session', s.id);
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#0a0a0a;border:1px solid #1f1f1f;border-radius:6px';
+
+      const info = document.createElement('div');
+      info.style.cssText = 'min-width:0;flex:1;display:flex;align-items:center;gap:8px';
+
+      // Provider tag: pika avatar / recall voice-only / daily pipecat
+      const provider = s.provider || 'pika';
+      const tag = document.createElement('span');
+      let tagLabel;
+      let tagCss;
+      if (provider === 'recall') {
+        tagLabel = 'Voice';
+        tagCss = 'background:rgba(124,58,237,0.15);color:#a78bfa;border:1px solid rgba(124,58,237,0.3)';
+      } else if (provider === 'daily') {
+        tagLabel = 'Daily';
+        tagCss = 'background:rgba(16,185,129,0.15);color:#34d399;border:1px solid rgba(16,185,129,0.3)';
+      } else {
+        tagLabel = 'Avatar';
+        tagCss = 'background:rgba(79,70,229,0.15);color:#60a5fa;border:1px solid rgba(79,70,229,0.3)';
+      }
+      tag.style.cssText = 'flex-shrink:0;font-size:9px;font-weight:700;letter-spacing:1px;padding:2px 6px;border-radius:4px;text-transform:uppercase;' + tagCss;
+      tag.textContent = tagLabel;
+      info.appendChild(tag);
+
+      const meta = document.createElement('div');
+      meta.style.cssText = 'min-width:0;flex:1';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:12px;color:#fff;font-weight:600';
+      const agentLabel = (s.agent_id || '').charAt(0).toUpperCase() + (s.agent_id || '').slice(1);
+      title.textContent = agentLabel + ' · ' + (s.status === 'live' ? 'live' : s.status);
+      const sub = document.createElement('div');
+      sub.style.cssText = 'font-size:10px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      const urlShort = (s.meet_url || '').replace(MEET_URL_PREFIX, '');
+      sub.textContent = 'meet/' + urlShort + ' · ' + formatMeetElapsed(s);
+      meta.appendChild(title);
+      meta.appendChild(sub);
+      info.appendChild(meta);
+
+      const leaveBtn = document.createElement('button');
+      leaveBtn.style.cssText = 'background:#1a1a1a;color:#f87171;border:1px solid #2a2a2a;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0;margin-left:8px';
+      leaveBtn.textContent = 'Leave';
+      leaveBtn.addEventListener('click', function() { leaveMeetSession(s.id); });
+
+      row.appendChild(info);
+      row.appendChild(leaveBtn);
+      container.appendChild(row);
+    });
+  } catch (e) { /* silent */ }
+}
+
+// Initial load + polling
+loadMeetAgentOptions();
+refreshMeetSessions();
+setInterval(refreshMeetSessions, 5000);
+
 // ── Agent & Hive Mind ────────────────────────────────────────────────
 const AGENT_COLORS = { main: '#4f46e5', comms: '#0ea5e9', content: '#f59e0b', ops: '#10b981', research: '#8b5cf6' };
 
@@ -980,11 +1505,25 @@ async function loadAgents() {
           modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
         '</div>' +
       '</div>';
-      return '<div class="card clickable-card" style="min-width:130px;flex:1;max-width:220px;border-left:3px solid ' + color + '" data-agent="' + a.id + '" onclick="toggleAgentDetail(this.dataset.agent)">' +
-        '<div class="font-bold text-white text-sm">' + a.name + '</div>' +
-        '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
-        modelSelect +
-        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
+      // Unified avatar endpoint: serves user uploads, Telegram-cached
+      // photos, or bundled fallback art from a single resolver. The
+      // onerror fallback removes the <img> if even the resolver 204s
+      // (no bundled art either) so we don't show a broken image icon.
+      const avatarV = a.avatar_etag ? ('&v=' + encodeURIComponent(a.avatar_etag)) : '';
+      const avatarUrl = '/api/agents/' + encodeURIComponent(a.id) + '/avatar?token=' + encodeURIComponent(TOKEN) + avatarV;
+      const avatarImg = '<img src="' + avatarUrl + '" alt="" ' +
+        'style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid ' + color + ';flex-shrink:0;background:#0a0a0a" ' +
+        'onerror="this.remove()">';
+      return '<div class="card clickable-card" style="min-width:150px;flex:1;max-width:220px;border-left:3px solid ' + color + '" data-agent="' + a.id + '" onclick="toggleAgentDetail(this.dataset.agent)">' +
+        '<div style="display:flex;gap:10px;align-items:flex-start">' +
+          avatarImg +
+          '<div style="flex:1;min-width:0">' +
+            '<div class="font-bold text-white text-sm">' + a.name + '</div>' +
+            '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
+            modelSelect +
+            (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
+          '</div>' +
+        '</div>' +
       '</div>';
     }).join('');
   } catch {}
@@ -1099,6 +1638,7 @@ async function toggleAgentDetail(agentId) {
       html += '<div class="flex gap-2 mt-4 pt-3" style="border-top:1px solid #2a2a2a">';
       if (agent && agent.running) {
         html += '<button data-agent="' + agentId + '" data-act="stop" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#1a1a1a;color:#f87171;border:1px solid #7f1d1d;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Stop</button>';
+        html += '<button data-agent="' + agentId + '" data-act="restart" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#1a1a1a;color:#60a5fa;border:1px solid #1e3a5f;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Restart</button>';
       } else {
         html += '<button data-agent="' + agentId + '" data-act="start" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#064e3b;color:#6ee7b7;border:1px solid #065f46;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Start</button>';
       }
@@ -1152,6 +1692,20 @@ async function agentModalAction(agentId, action) {
         setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
       } else {
         status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Start failed') + '</span>';
+      }
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
+  }
+
+  if (action === 'restart') {
+    status.innerHTML = '<span style="color:#fbbf24">Restarting...</span>';
+    try {
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/restart?token=' + TOKEN, { method: 'POST' });
+      var data = await res.json();
+      if (data.ok) {
+        status.innerHTML = '<span style="color:#6ee7b7">Restarted</span>';
+        setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Restart failed') + '</span>';
       }
     } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
   }

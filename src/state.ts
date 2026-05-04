@@ -29,13 +29,18 @@ export function setTelegramConnected(v: boolean): void {
 // ── Chat event bus (SSE broadcasting) ────────────────────────────────
 
 export interface ChatEvent {
-  type: 'user_message' | 'assistant_message' | 'processing' | 'progress' | 'error' | 'hive_mind';
+  type: 'user_message' | 'assistant_message' | 'assistant_photo' | 'processing' | 'progress' | 'error' | 'hive_mind';
   chatId: string;
   agentId?: string;
   content?: string;
   source?: 'telegram' | 'dashboard';
   description?: string;
   processing?: boolean;
+  // Inline photo payload — emitted alongside assistant_message when the
+  // agent reply included a [SEND_PHOTO|http(s) URL] marker. The chat
+  // SPA renders this as an <img> bubble.
+  url?: string;
+  caption?: string;
   timestamp: number;
 }
 
@@ -79,4 +84,18 @@ export function abortActiveQuery(chatId: string): boolean {
     return true;
   }
   return false;
+}
+
+/** Aborts every registered controller whose key starts with `prefix`.
+ *  Used by the text war room to kill all of a meeting's per-agent SDK
+ *  queries at once — without this, cancellation has to wait up to 50ms
+ *  for the in-orchestrator watcher poll to notice the cancelFlag flip. */
+export function abortByPrefix(prefix: string): number {
+  let count = 0;
+  for (const [key, ctrl] of _activeAbort) {
+    if (!key.startsWith(prefix)) continue;
+    try { ctrl.abort(); count++; } catch { /* noop */ }
+    _activeAbort.delete(key);
+  }
+  return count;
 }

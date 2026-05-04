@@ -18,11 +18,59 @@
 
 > Your Claude Code CLI, delivered to your phone via Telegram.
 
-ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac or Linux machine and pipes the result back to your Telegram chat. Everything that works in your terminal (your skills, your tools, your context) works from your phone.
+ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac, Linux, or Windows machine and pipes the result back to your Telegram chat. Everything that works in your terminal (your skills, your tools, your context) works from your phone.
+
+![ClaudeClaw at a glance](assets/claudeclaw-overview.png)
+
+Eight surfaces, one bot, one machine. Telegram for chat, the dashboard for everything else, war room for live multi-agent conversation (text or voice), Mission Control for queued work, Scheduled for recurring runs, Hive Mind to see what every agent has been doing. Everything is local: SQLite database, Node bot, optional dashboard. No cloud, no telemetry, no per-message API calls beyond the model itself.
 
 ---
 
-## Get started
+## What You Get
+
+ClaudeClaw has two tiers of features. The **core** features work out of the box with just a Telegram bot token. The **experimental** features are opt-in and require additional setup.
+
+### Core Features (zero to hero in 5 minutes)
+
+Everything below works with just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`. No extra API keys.
+
+| Feature | What it does |
+|---------|-------------|
+| **Text messaging** | Full Claude Code from your phone. All tools, all skills. |
+| **Photos and documents** | Send a photo or PDF, Claude reads and analyzes it |
+| **Session persistence** | Context carries across every message, even after restarts |
+| **Memory system** | SQLite-backed memory that learns about you over time |
+| **Scheduled tasks v2** | Cron with plain-English descriptions, visual time picker, edit/pause/resume/delete |
+| **Web dashboard** | Live monitoring, theme + UI scale + accent personalization, workspace name |
+| **Mission Control** | Kanban with custom column widths, drag-drop reassign, auto-assign via Gemini, history drawer |
+| **Multi-agent** | Run specialist agents (research, comms, content, ops, meta) in parallel |
+| **Agent creation wizard** | 3-step flow from BotFather token to running agent — directly in the dashboard |
+| **Custom agent avatars** | Upload PNG/JPEG/WebP per agent, or fall back to Telegram profile photo, or to bundled art |
+| **Hive Mind** | Cross-agent activity log with 2D and 3D anatomical brain views, lobe-hover stats, per-agent pie chart |
+| **Agent files editor** | Edit each agent's CLAUDE.md from the dashboard with full SQLite-backed version history |
+| **All your skills** | Every skill in `~/.claude/skills/` auto-loads |
+| **File sending** | Claude can create and send files back to you |
+| **Voice output (macOS)** | Uses `say` + ffmpeg locally, no API key needed |
+
+### Experimental Features (opt-in, additional setup)
+
+These are powerful but require extra API keys or services. Each one has its own setup section below.
+
+| Feature | What you need | Notes |
+|---------|-------------|-------|
+| **Voice input** | `GROQ_API_KEY` (free) | Transcribes your voice notes via Whisper |
+| **Voice output (cloud)** | ElevenLabs, Gradium, or Kokoro | Higher quality than macOS `say` |
+| **Video analysis** | `GOOGLE_API_KEY` | Gemini analyzes videos you send |
+| **Memory consolidation** | `GOOGLE_API_KEY` | Gemini detects patterns across conversations |
+| **War Room (voice)** | `GOOGLE_API_KEY` + Python venv | Live voice boardroom with your agent team via Gemini Live (no Deepgram, no Cartesia) |
+| **War Room (text)** | none extra | Multi-agent text group chat with agent rail, `/standup`, `/discuss`, ad-hoc rosters, sticky-addressee follow-ups |
+| **Standup roster picker** | none extra | Drag-reorder, toggle, cap, and rotate `/standup` speakers from the dashboard |
+| **Live Meetings (Daily.co)** | `DAILY_API_KEY` | Send an agent into a Daily.co video room with a Pika avatar that speaks in real time |
+| **WhatsApp bridge** | Puppeteer + QR scan | Highly experimental. Read/send WhatsApp from Telegram |
+
+---
+
+## Get Started
 
 ![ClaudeClaw setup flow](assets/setup-flow.jpeg)
 
@@ -73,8 +121,8 @@ Keep this token handy for the next step.
 ### Step 3: Clone and install
 
 ```bash
-git clone https://github.com/earlyaidopters/claudeclaw.git
-cd claudeclaw
+git clone https://github.com/earlyaidopters/claudeclaw-os.git
+cd claudeclaw-os
 npm install
 ```
 
@@ -89,13 +137,13 @@ npm run setup
 The wizard walks you through everything interactively:
 
 - Checks your environment (Node, Claude CLI, builds if needed)
-- Asks which features you want (voice input, voice output, video analysis, WhatsApp)
-- Sets up your Telegram bot token and chat ID
+- Asks which features you want (voice, video, War Room, WhatsApp)
+- Sets up your Telegram bot token and auto-detects your chat ID
 - **Configures security**: PIN lock, emergency kill phrase, idle auto-lock
-- Opens your editor to personalize `CLAUDE.md`
-- Lists the skills you'll want to install and where to get them
-- Prompts for API keys **only for the features you selected**
-- Installs a background service (launchd on macOS, systemd on Linux, PM2 on Windows)
+- Creates your `CLAUDE.md` personality file from a template
+- Collects API keys **only for the features you selected**
+- Optionally sets up specialist agents (custom or from templates)
+- Offers to start the bot immediately when done
 
 > **Prefer to let Claude handle it?** After cloning, `cd` into the repo, run `claude`, and paste:
 > ```
@@ -106,27 +154,17 @@ The wizard walks you through everything interactively:
 
 ---
 
-### Step 5: Get your Telegram chat ID
+### Step 5: Chat ID (automatic)
 
-Your chat ID locks the bot to you, no one else can use it.
+The setup wizard detects your chat ID automatically. When it asks you to message your bot on Telegram, just send any message and press Y. It picks up your chat ID via the Telegram API.
 
-1. Start the bot: `npm start`
-2. Open Telegram and message your bot
-3. Send `/chatid`
-4. The bot replies with a number. that's your chat ID
-5. Add it to `.env`:
-   ```
-   ALLOWED_CHAT_ID=your_number_here
-   ```
-6. Restart: stop the bot (Ctrl+C) and run `npm start` again
-
-> The setup wizard does this step automatically if you run `npm run setup` before starting.
+If you skipped this step during setup, the bot will auto-detect your chat ID the first time you message it and save it to `.env` for you.
 
 ---
 
 ### Step 6: Send your first message
 
-With the bot running, send any message. Try:
+The wizard offers to start the bot at the end. If you said yes, it's already running. Otherwise, run `npm start`. Then send any message. Try:
 
 ```
 What can you do?
@@ -159,12 +197,28 @@ systemctl --user status claudeclaw
 journalctl --user -u claudeclaw -f
 ```
 
-**Windows**: use WSL2 (recommended) and follow the Linux steps, or:
-```bash
-npm install -g pm2
-pm2 start dist/index.js --name claudeclaw
-pm2 save && pm2 startup
-```
+**Windows**: two supported paths. WSL2 is smoother, native works too.
+
+- **WSL2 (recommended)**: `wsl --install -d Ubuntu` in an elevated PowerShell, reboot, clone ClaudeClaw *inside* the Ubuntu filesystem (not `/mnt/c`), then follow the Linux steps above. Keep `~/.claude/` inside WSL2.
+- **Native Windows**: the setup wizard registers a per-user Scheduled Task that runs at logon (no admin rights required). Manage it with:
+  ```powershell
+  schtasks /Query /TN "com.claudeclaw.main"
+  schtasks /End   /TN "com.claudeclaw.main"
+  schtasks /Run   /TN "com.claudeclaw.main"
+  schtasks /Delete /TN "com.claudeclaw.main" /F
+  ```
+  Logs are in `logs\main.log`. Same for each agent at `logs\<agent-id>.log`.
+- **PM2 fallback (native Windows)** if the scheduled task route doesn't work:
+  ```powershell
+  npm install -g pm2
+  pm2 start dist/index.js --name claudeclaw
+  pm2 save && pm2 startup
+  ```
+
+Caveats on native Windows:
+- The War Room voice feature expects a POSIX Python venv. If you need voice, use WSL2.
+- `better-sqlite3` is a native module. If `npm install` fails, install **Visual Studio Build Tools** (C++ workload) and retry. WSL2 skips this.
+- macOS-only TTS (`say`) is off; use ElevenLabs for voice replies instead.
 
 ---
 
@@ -195,7 +249,7 @@ Output looks like:
 When a new version is released, update in 5 commands:
 
 ```bash
-cd claudeclaw          # go to your ClaudeClaw directory
+cd claudeclaw-os       # go to your ClaudeClaw directory
 git pull               # pull the latest code
 npm install            # install any new dependencies
 npm run migrate        # apply any pending migrations
@@ -216,32 +270,13 @@ Then restart the bot (Ctrl+C and `npm start`, or restart the background service)
 
 ## What's included
 
-### Zero extra API keys needed
-
-With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
-
-| Feature | Works? | Notes |
-|---------|--------|-------|
-| Text messaging | ✅ | Full Claude Code, all tools |
-| Photos | ✅ | Claude reads and analyzes them |
-| Documents | ✅ | PDF, code, text. anything Claude Code can open |
-| SQLite memory | ✅ | Auto-initialized on first run, nothing to configure |
-| Session persistence | ✅ | Context carries across every message |
-| Scheduled tasks | ✅ | Ask Claude to run anything on a cron schedule |
-| Mission Control | ✅ | Dashboard task board with auto-assign. Needs `GOOGLE_API_KEY` for auto-assign |
-| Web dashboard | ✅ | Live monitoring via Cloudflare tunnel. Needs `DASHBOARD_TOKEN` |
-| Multi-agent | ✅ | Run multiple specialized agents in parallel |
-| All your skills | ✅ | Every skill in `~/.claude/skills/` auto-loads |
-| WhatsApp (`/wa`) | ✅ | No API key, but needs the wa-daemon running |
-| Voice input | ❌ | Needs `GROQ_API_KEY` |
-| Voice output (macOS) | ✅ | Uses `say` + ffmpeg locally, no API key needed |
-| Voice output (cloud) | ❌ | ElevenLabs or Gradium API key for higher quality |
-| Video analysis | ❌ | Needs `GOOGLE_API_KEY` + `gemini-api-dev` skill |
-| Memory consolidation | ❌ | Needs `GOOGLE_API_KEY` for Gemini-powered pattern detection |
+See the feature table at the top of this README. Core features work with zero extra API keys. Experimental features are opt-in.
 
 ---
 
-## API keys: what each does and alternatives
+## API Keys: What Each Does
+
+> **Most users only need a Telegram bot token.** Everything below the Telegram section is optional and only needed for experimental features.
 
 ### Telegram Bot Token (required)
 
@@ -380,7 +415,7 @@ Voice output uses a cascade of TTS providers. If the first one fails, it tries t
 
 If all TTS providers fail, it falls back to text automatically.
 
-### Voice pipeline
+### Voice pipeline (Telegram voice notes)
 
 ```
 Voice note sent
@@ -394,6 +429,8 @@ Check for voice-back trigger phrases
   │                         (ElevenLabs → Gradium → macOS say)
   └── not found → Claude runs → text reply
 ```
+
+> **Want full voice conversations?** The War Room (experimental) lets you have live voice meetings with your agent team using Gemini Live. No Deepgram or Cartesia needed. The recommended setup is just `GOOGLE_API_KEY`. See the War Room section below.
 
 ### Photos → analyzed immediately
 
@@ -734,6 +771,23 @@ All endpoints require `?token=YOUR_TOKEN`. Per-user endpoints also need `&chatId
 
 </details>
 
+### Personalization
+
+![Dashboard personalization](assets/dashboard-personalization.png)
+
+The dashboard adapts to how you read code, not the other way around. Settings → **Appearance**:
+
+| Knob | What you can change |
+|------|---------------------|
+| **Color theme** | Dark / light / auto. Drives the entire SPA, not just one panel. |
+| **Custom hex accent** | Pick from six preset accents (mint / amber / cyan / pink / lavender / blue) or paste your own `#hex`. Live-previews across highlights, focus rings, badges, brain glow, and chart strokes. |
+| **UI scale** | Compact / cozy / comfortable. Changes font size and spacing globally — doesn't break any layout because every measurement uses the same scale variable. |
+| **Workspace name** | Rename the sidebar header. Useful if you run multiple ClaudeClaw installs (work / personal). |
+| **Sidebar sections** | Collapse the sections you don't use so the rail is shorter on small screens. |
+| **Mission column order + widths** | Drag the columns; reorder by name; persist per-install. |
+
+Everything writes to `dashboard_settings` via `PATCH /api/dashboard/settings` — JSON-validated, byte-capped (4 KB), scoped to an explicit allowlist of keys. A malformed payload bounces with a `400` and a specific error message rather than silently saving and breaking the next read.
+
 ---
 
 ## Slack (optional)
@@ -831,7 +885,97 @@ node dist/slack-cli.js search "jane"     # Find conversations by name
 
 ---
 
-## WhatsApp (optional)
+## War Room
+
+The War Room is where you bring multiple agents into one conversation. Three modes share the same dashboard surface:
+
+- **Text mode** — async multi-agent group chat with `/standup`, `/discuss`, ad-hoc rosters, and an MSN-style status rail. No extra setup, no API keys.
+- **Voice mode** — live voice boardroom over Gemini Live. Talk, get spoken replies in each agent's distinct voice.
+- **Live Meetings** — send a Pika-avatar agent into a Daily.co video room as a real participant.
+
+### Text mode (no extra setup)
+
+![War Room text mode](assets/warroom-text-flow.png)
+
+The text war room is the easiest way to pull your full team into one thread. Open the dashboard, click **War Room → Text → New text meeting**, and you've got a multi-agent group chat with full transcript and per-agent rail.
+
+Three slash commands shape how the room behaves:
+
+| Command | What it does |
+|---------|-------------|
+| `/standup` | Every enabled agent in the standup roster speaks once, in order. Status update format. |
+| `/discuss <topic>` | Same roster, but framed as a discussion of `<topic>` rather than a status check. |
+| `/standup @meta @research` | **Ad-hoc roster** — only the named agents run. Saved roster is ignored for this run. |
+
+You can also `@-mention` a single agent (`@research what trends should I know about?`) and the team chimes in only when relevant — gated by a lightweight classifier that decides whether each non-mentioned agent has something to add.
+
+**Rotation queue.** When more agents are enabled than the per-turn cap (default `8`), the over-cap agents queue and rotate on the next `/standup` call so every agent eventually speaks. The standup config page footnotes this whenever the queue is non-empty.
+
+**Hive logging.** Every primary reply lands in the cross-agent **hive_mind** table as `action='warroom_reply'`; intervener replies log as `action='warroom_chime_in'`. Replies under 25 chars and legacy meetings (no chat_id) are filtered out. This is what populates the Hive Mind brain views and the per-agent activity rails.
+
+### Standup roster picker
+
+![Standup roster picker](assets/standup-picker.png)
+
+Dashboard → War Room → **Standup** opens the roster editor. From here you decide:
+
+- **Order** — drag-reorder the agent list. The first slot is the primary leader of every `/standup` run.
+- **In / out** — toggle which agents participate. Disabled rows stay in the list (so you don't lose your order) but are skipped at runtime.
+- **Cap** — slider 1..8 (the orchestrator's `SLASH_HARD_CAP`). The header reads `X will speak · Y in rotation · Z disabled` so you always know what the next call will look like.
+
+Saved to `dashboard_settings.standup_config` and read by `pickSlashRoster()` in the orchestrator. Ad-hoc `@-mention` rosters skip this config entirely for the duration of one command.
+
+### Voice mode
+
+![War Room voice — Gemini Live](assets/warroom-voice-gemini.png)
+
+The voice war room is a live boardroom you join from the browser. You speak, Gemini Live processes your voice natively (speech-to-speech), and agents respond with their own voices. You can pin a specific agent for direct conversation, or use "hand-raise" mode where Gemini automatically routes your questions to the best agent.
+
+**What you need:**
+- `GOOGLE_API_KEY` (Google AI Studio, free tier works)
+- Python 3.10+ with a virtual environment
+- `WARROOM_ENABLED=true` in your `.env`
+
+**Default setup (Gemini Live mode):** Gemini handles both speech recognition and voice synthesis natively with sub-second latency. No Deepgram, no Cartesia, no extra voice API keys. Just your Google API key.
+
+**Setup:**
+```bash
+# 1. Create the Python virtual environment
+python3 -m venv warroom/.venv
+source warroom/.venv/bin/activate
+pip install -r warroom/requirements.txt
+
+# 2. Add to your .env
+WARROOM_ENABLED=true
+GOOGLE_API_KEY=your-google-ai-studio-key
+
+# 3. Rebuild and restart
+npm run build
+npm start
+```
+
+**Access:** Open the dashboard and click "War Room" in the navigation. The interface has a cinematic intro, agent sidebar with click-to-pin, live mic waveform, and transcript view.
+
+**Modes:**
+- **Direct mode**: Talk to one pinned agent. Click a different agent card to switch.
+- **Auto mode (hand-raise)**: Gemini listens and routes each question to the best agent automatically. You'll see a hand-up animation on the agent card that's answering.
+
+**Voices:** Each agent has a distinct Gemini voice (configurable via the dashboard voice settings). The voice config lives in `warroom/voices.json`.
+
+**Entrance music:** The War Room can play background music during the cinematic intro. Upload any mp3 via the "upload" link in the War Room sidebar. The file saves to `warroom/music.mp3` (gitignored) and plays at low volume, fading out when the session connects. No music ships by default.
+
+**Legacy mode:** If you prefer the original stitched pipeline (Deepgram STT + Claude + Cartesia TTS), set `WARROOM_MODE=legacy` and provide `DEEPGRAM_API_KEY` + `CARTESIA_API_KEY`. This has higher latency (~10s per turn) but runs the full Claude Code stack per utterance.
+
+**Rebuilding the Pipecat client bundle:** If you modify `warroom/client.js`, rebuild with:
+```bash
+npm run build:warroom-client
+```
+
+---
+
+## WhatsApp (highly experimental)
+
+> **This feature is experimental.** It works, but it uses Puppeteer to drive a headless browser session with WhatsApp Web. It can break when WhatsApp updates their web client, requires a QR code scan to authenticate, and the session can expire. Use at your own risk.
 
 ![WhatsApp bridge](assets/whatsapp-bridge.jpeg)
 
@@ -968,7 +1112,57 @@ High-importance memories (0.8+) trigger a Telegram notification when saved, givi
 
 ---
 
+## Hive Mind
+
+While Memory is what each agent remembers about you, **Hive Mind** is what every agent can see about each other. Every meaningful action by any agent — a war-room reply, a finished mission task, a tool call, a scheduled run — lands in one shared `hive_mind` table. The dashboard turns that table into a real-time activity feed and a brain visualization you can hover.
+
+![Hive Mind data flow](assets/hive-mind-data-flow.png)
+
+The flow is the same regardless of which agent fires:
+
+1. **Source.** Some agent does something — finishes a task, replies in the war room, calls a tool.
+2. **Write.** `logToHiveMind()` inserts a row with `agent_id`, `chat_id`, `action`, `summary`, optional artifacts.
+3. **Stream.** The dashboard's SSE channel broadcasts the new row to every open tab.
+4. **Render.** The brain dispatches: 3D mode parents a new dot to the right lobe and fires a synapse arc; 2D mode increments the lobe's counter and pulses its glow.
+5. **Output.** You see it in the rail, on the brain, and in the per-agent activity panels.
+
+Some replies are filtered out so the brain stays signal-rich: war-room replies under 25 chars (catches "ok" / "noted"), legacy meetings with no chat_id, and retry replays where the assistant insert was a no-op.
+
+### The 3D brain
+
+![Hive Mind 3D brain — how it's built](assets/hive-3d-brain-build.png)
+
+The 3D view is a real anatomical cerebrum mesh from the **NIH 3D Print Exchange**, rendered in WebGL via Three.js. On top of the mesh:
+
+- **Cortex glow** uses `EffectComposer + UnrealBloomPass` so the brain pulses subtly with overall activity.
+- **Activity dots** are parented to the brain group — one per `hive_mind` row, positioned by lobe, invisible until filtered in.
+- **Synapse arcs** fire on every new entry: a curved line from the prior lobe to the new one, deduplicated via a `seenEntryIds` Set, capped at 24 concurrent arcs so memory stays bounded.
+- **Hover a lobe** and a tooltip pops with the entry count and a per-agent pie chart breaking down which agents drove that lobe's activity.
+- The slider that used to filter visible agents is repurposed as a **glow intensity** knob for screenshots and demos.
+
+The whole scene runs in `BrainGraph3D.tsx` at 60fps with a side-three-quarter camera angle so you can see all four lobes without rotating.
+
+### The 2D brain
+
+![Hive Mind 2D brain — how it's built](assets/hive-2d-brain-build.png)
+
+The 2D view is a fallback for tabs where WebGL is unavailable, or when you'd rather not run a Three.js scene. It draws into an HTML5 `<canvas>` with the same data source:
+
+- A cerebrum **silhouette** with frontal / parietal / temporal / occipital lobes, gyri textured as bezier curves, and a soft inner shadow per region.
+- **Activity dots** placed inside each lobe shape, fading with row age.
+- **Lobe stats panel** on hover: entry count plus the same per-agent breakdown the 3D brain shows.
+
+The 2D view repaints instantly on filter changes and is significantly lighter on the GPU. Use whichever feels right; the data is identical.
+
+### Privacy
+
+The Hive Mind page has a **blur toggle** that hides every summary while preserving counts, agent badges, and timestamps. Use it before screen-sharing or screenshots if your activity logs name internal projects you don't want visible.
+
+---
+
 ## Scheduled tasks
+
+![Scheduled v2](assets/scheduled-v2.png)
 
 Tell Claude what you want, in plain language:
 
@@ -978,7 +1172,19 @@ Every weekday at 8am, check my calendar and inbox and give me a briefing
 Every 4 hours, check for new emails from clients and flag anything urgent
 ```
 
-Claude creates and manages tasks via the built-in CLI. Manage them directly too:
+Claude creates the task via CLI; the dashboard's **Scheduled** page becomes the day-to-day control surface.
+
+### What the v2 page does for you
+
+- **Plain-English descriptions.** Every task shows its cron parsed back into something readable: `Every weekday at 9:00 AM`, `Every 4 hours`, `On the 1st of each month at 9:00 AM`. No more decoding `0 8 * * 1-5` in your head.
+- **Visual time-of-day picker.** Click any task to edit. Pick the days of the week (M T W T F S S), pick the hour and minute on a wheel, and the editor writes the cron back for you.
+- **Edit prompts and assignments.** Change the prompt, the schedule, or the agent assignment without recreating the task. Edits are live — the next run uses the new values.
+- **Per-agent scoping.** Every task has an agent tag (`@main`, `@comms`, `@research`, ...) and runs inside that agent's process, scoped to its memory and skills.
+- **Inline pause / resume / delete.** Buttons live on each row. Bulk-select with the checkbox column to delete a stack at once.
+- **Last-result snippet.** Click the chevron on a row to see the last execution's output and timestamp without leaving the page.
+- **Privacy blur toggle.** Hides task prompts before you screen-share or screenshot — the rest of the page stays visible.
+
+### CLI
 
 ```bash
 node dist/schedule-cli.js list
@@ -1001,17 +1207,35 @@ node dist/schedule-cli.js delete <id>
 
 Mission Control lets you create one-shot tasks and assign them to any agent from the dashboard or via Telegram.
 
+![Mission Control task lifecycle](assets/mission-control-flow.png)
+
 ### How it works
 
-1. **Create a task** from the dashboard (click "+ New") or tell your main agent: "have research look into X"
-2. The task appears in the **Tasks inbox** on the dashboard, unassigned
-3. **Assign it** by dragging it to an agent column, or click **Auto-assign** to let Gemini classify and route it to the best agent automatically
+1. **Create a task** from the dashboard (click **+ New Task** in the inbox column) or tell your main agent: "have research look into X"
+2. The task appears in the **Inbox** column on the dashboard, unassigned, with a priority pill
+3. **Assign it** by dragging it to an agent column, clicking **Auto-assign** for a single task, or **Auto-assign all** to bulk-route every unassigned task in one shot
 4. The target agent picks it up within 60 seconds, executes it, and sends the result to your Telegram chat
-5. Completed tasks appear in the agent's column for 30 minutes, then move to the **History** drawer
+5. Completed tasks linger in the agent's column for 30 minutes (so you can re-read the result inline), then move to the **History** drawer where they're paginated and searchable
+
+### Layout controls
+
+The kanban is fully customizable. Use the **Layout** menu in the column header to:
+
+| Preset | What it does |
+|--------|-------------|
+| **Uniform** | Every column the same width — best for screenshots and first-time scans |
+| **Fit** | Each column sized to its widest task title — best for long task names |
+| **Reset** | Back to the default proportions |
+
+You can also drag any column border to resize it manually. Order and widths persist per workspace via `dashboard_settings.mission_column_order` and `mission_column_widths` — no re-arranging on every reload.
+
+### Inbox task details
+
+Click any inbox card to open the **task details modal**: full prompt, priority, creation timestamp, and a single-click reassign drop-down. Useful when you've forgotten what's queued and want to triage without dragging things around.
 
 ### Auto-assign
 
-When you click Auto-assign, Gemini Flash reads the task prompt and matches it against your agent descriptions (from their `agent.yaml` files). A task about "draft a reply to John's email" routes to the comms agent. A task about "research competitors" routes to the research agent. Costs about $0.0001 per classification.
+When you click **Auto-assign**, Gemini Flash reads the task prompt and matches it against your agent descriptions (from their `agent.yaml` files). A task about "draft a reply to John's email" routes to the comms agent. A task about "research competitors" routes to the research agent. Costs about $0.0001 per classification. **Auto-assign all** runs the same classifier in bulk for every unassigned task in the inbox.
 
 ### From Telegram
 
@@ -1095,6 +1319,86 @@ The sections that matter most:
 **Skills table**: Maps skill names to trigger phrases. This teaches Claude to invoke them automatically when you describe a task.
 
 **Message format**: How responses should look in Telegram: tight and scannable, summary-first for long outputs, how to handle task lists.
+
+---
+
+## Building your context stack
+
+ClaudeClaw gets more useful the more context you give it. Each layer compounds on the last. Your CLAUDE.md is the foundation, skills add capabilities, and your file system becomes the knowledge base. The more you invest in these layers, the less you explain per message and the more your agents can do autonomously.
+
+Here's how to think about it if you're a business owner:
+
+### Layer 1: CLAUDE.md (who you are)
+
+This is the base. Every session loads it. Tell Claude about your business, your role, your tools, your preferences. Open Claude Code in your terminal and try:
+
+```
+Update my CLAUDE.md with this context:
+- I run [your business]. We sell [products/services].
+- My team is [size], mostly in [locations/timezones].
+- I use [tools: Stripe, Notion, Slack, etc.] daily.
+- When I say "check revenue" I mean Stripe + Gumroad combined.
+- My writing style: [direct, casual, formal, etc.].
+- Never [thing you hate in AI output].
+```
+
+### Layer 2: File system (what you know)
+
+Claude can read any file on your machine. Organize key business docs where agents can find them:
+
+```
+Create a ~/Business folder structure for my ClaudeClaw agents:
+- ~/Business/SOPs/ for standard operating procedures
+- ~/Business/Templates/ for email templates, proposals, contracts
+- ~/Business/Clients/ for client briefs and notes
+- ~/Business/Products/ for pricing, feature lists, positioning docs
+
+Then update my CLAUDE.md to reference these paths so agents
+know where to look without being told.
+```
+
+If you use Obsidian, point your vault path in CLAUDE.md and agents will search it automatically.
+
+### Layer 3: Skills (what you can do)
+
+Each skill you install is a new capability every agent inherits. Start with the basics and add more as you need them:
+
+```
+Install these skills into ~/.claude/skills/:
+- gmail (email triage, drafting, sending)
+- google-calendar (scheduling, availability checks)
+- agent-browser (web research, form filling, scraping)
+
+Then test: send "check my email" to your bot on Telegram.
+```
+
+The skill catalog is at [github.com/anthropics/claude-code/tree/main/skills](https://github.com/anthropics/claude-code/tree/main/skills). Community skills work too. Anything in `~/.claude/skills/` auto-loads for every agent.
+
+### Layer 4: Agents (who does what)
+
+Once you have context and skills, specialist agents multiply your throughput:
+
+| Agent | Handles | You stop doing |
+|-------|---------|---------------|
+| comms | Email triage, Slack replies, DM responses | Inbox scanning |
+| research | Market research, competitor tracking, trend reports | Manual googling |
+| content | Drafts, social posts, scripts | First-draft writing |
+| ops | Calendar, billing, task management | Admin work |
+
+Each agent gets its own 1M context window, its own CLAUDE.md personality, and access to every skill you've installed.
+
+### The compounding effect
+
+Each layer makes the others more powerful:
+
+- **CLAUDE.md** alone: Claude knows who you are but can't do much
+- **+ Files**: Claude can reference your SOPs, templates, and client notes
+- **+ Skills**: Claude can send emails, check your calendar, browse the web
+- **+ Agents**: Four specialists working in parallel, each with full context
+- **+ Scheduled tasks**: Agents running autonomously on a cron (daily email triage, weekly reports)
+- **+ Memory**: Every interaction teaches the system. It remembers client preferences, project history, your patterns
+
+You don't need everything on day one. Start with CLAUDE.md and one skill. Add layers as you feel the gaps.
 
 ---
 
@@ -1183,21 +1487,21 @@ npm run typecheck # Type-check without compiling
 
 ## Is this compliant with Anthropic's Terms of Service?
 
-**Yes.** On February 19, 2026, Anthropic published their [Legal and Compliance page](https://docs.anthropic.com/en/docs/legal-and-compliance) banning OAuth tokens in third-party tools. ClaudeClaw is not affected.
+**It's a grey area, but signs point to yes for personal use.** Anthropic's Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Boris Cherny (Anthropic) has indicated the Agent SDK can be used for personal usage with a Claude subscription. ClaudeClaw uses this SDK exclusively.
 
-**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code. impersonating Claude Code without running it (e.g. the old OpenClaw).
-
-**Why ClaudeClaw is different:** `@anthropic-ai/claude-agent-sdk`'s `query()` spawns the `claude` binary as a child process. That subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output. identical to `claude -p "message"` in a terminal.
+**How ClaudeClaw works:** The Agent SDK's `query()` spawns the `claude` binary as a child process. That subprocess manages its own auth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal.
 
 | | ClaudeClaw | Token-extraction tools |
 |---|---|---|
 | Runs the official `claude` CLI | ✅ | ❌ |
-| OAuth stays in `~/.claude/` | ✅ | ❌ |
+| Auth stays in `~/.claude/` | ✅ | ❌ |
 | Uses Anthropic-published SDK | ✅ | ❌ |
 | Single-user, personal machine | ✅ | ❌ |
 | Anthropic telemetry intact | ✅ | ❌ |
 
-For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing.
+**What's clearly not OK:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without running it.
+
+For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing. This removes any ambiguity since you're paying directly for usage.
 
 ---
 
@@ -1323,7 +1627,7 @@ No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLA
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
 
 **"Does this work on Windows?"**
-Yes, through WSL2. Install WSL2, clone ClaudeClaw inside the WSL filesystem, and follow the normal Linux setup steps. The setup wizard detects Windows and offers WSL2 or PM2 options.
+Yes, two ways. WSL2 is the smoothest (install WSL2, clone ClaudeClaw inside the WSL filesystem, run the normal Linux setup). Native Windows also works: the setup wizard registers a per-user Scheduled Task at logon (no admin rights), and agent activate/deactivate uses `schtasks` under the hood. War Room voice still needs WSL2 because the Python stack is POSIX-only.
 
 **"What is GOOGLE_API_KEY for?"**
 Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (those use separate OAuth credentials via the gmail and google-calendar skills). Get it free at [aistudio.google.com](https://aistudio.google.com).
@@ -1332,7 +1636,7 @@ Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (th
 Recommended but not required. The video covers how Claude Code works under the hood, which helps you understand what ClaudeClaw is actually doing. But you can set up ClaudeClaw first and watch it later.
 
 **"How do I update when a new version drops?"**
-`cd claudeclaw && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
+`cd claudeclaw-os && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
 
 **"Telegram formatting looks broken / not formatting properly"**
 ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code blocks, links). Telegram's formatting support is limited compared to a full web page. If something looks off, it's usually Telegram's rendering, not a bug. For very long or complex responses, the formatting is intentionally kept simple to avoid Telegram parse errors.
@@ -1463,7 +1767,13 @@ Everything else runs without modification.
 
 ---
 
-## Creating a team of agents
+## Creating a Team of Agents
+
+This is a core feature, not experimental. Setting up multiple agents is straightforward and one of the most powerful things about ClaudeClaw.
+
+**What are agents?** Instead of one bot doing everything, you can spin up specialist bots. Each one is its own Telegram chat with its own personality, its own context window, and its own focus area. Think of it like having a small team of people, each in their own DM thread on your phone.
+
+**How it works in plain English:** Each agent is just another Telegram bot running the same ClaudeClaw code, but with a different personality file (CLAUDE.md) and a different Telegram token. They all share your machine, your database, and your skills. The main agent can delegate work to specialists, and they ping you back on Telegram when they're done.
 
 ClaudeClaw can run **specialist agents** alongside the main bot. Each agent is its own Telegram bot with its own personality, its own Claude Code session, and its own chat on your phone.
 
@@ -1507,7 +1817,21 @@ You can start with one and add more later. Or use the blank `_template` and defi
 
 ### Step 2: Create Telegram bots
 
-Each agent needs its own Telegram bot. Open Telegram and message **@BotFather**:
+#### The fastest path: the dashboard wizard
+
+![Agent creation wizard](assets/agent-create-wizard.png)
+
+Open the dashboard's **Agents** page and click **+ New Agent**. The wizard walks you through three gated steps:
+
+1. **Template.** Pick `comms`, `content`, `ops`, `research`, or a blank template. Each loads a default `CLAUDE.md` you can edit later. The agent ID is debounced-validated against existing agents so you can't collide.
+2. **Token.** Paste your BotFather token. The wizard hits Telegram's `getMe` to validate the token in real time and shows the bot's username and profile photo on success.
+3. **Activate.** Reviews the agent name, model, token env var, and any optional Obsidian config. Clicking Activate writes `agent.yaml` and `.env`, installs the launchd plist, and starts the agent.
+
+A side panel during step 2 includes a **copy-to-clipboard `/newbot` template** and inline screenshots of the BotFather flow if you've never done this before. After the agent is running you can edit its CLAUDE.md or upload a custom avatar without leaving the dashboard.
+
+#### The manual path
+
+If you'd rather do it by hand, open Telegram and message **@BotFather**:
 
 1. Send `/newbot`
 2. Choose a name (e.g., "MyName Comms", "MyName Ops")
@@ -1516,13 +1840,35 @@ Each agent needs its own Telegram bot. Open Telegram and message **@BotFather**:
 
 Repeat for each agent you want. Keep the tokens handy.
 
-**Or use the interactive wizard:**
+#### Or run the interactive CLI wizard:
 
 ```bash
 npm run agent:create
 ```
 
-It walks you through template selection, bot creation, token setup, and a test start.
+It walks you through the same template selection, bot creation, token setup, and a test start — same code path as the dashboard, just terminal-driven.
+
+### Custom avatars
+
+![Avatar resolver — priority chain](assets/avatar-resolver.png)
+
+Every agent gets an avatar that surfaces in the dashboard, war room rail, agent cards, and Daily.co video tiles. The resolver has a fixed priority order so the same image shows up everywhere — no per-surface drift:
+
+1. **Mutable user-owned.** A PNG/JPEG/WebP you uploaded via the dashboard. Stored at `STORE_DIR/avatars/main.png` (for main) or `resolveAgentDir(id)/avatar.png` (for sub-agents).
+2. **Bundled meet variant.** `warroom/avatars/<id>-meet.png`, used only when an agent joins a Daily.co video tile (`ctx.context === 'meet'`). This is the version optimized for the small circular video frame.
+3. **Bundled default art.** `warroom/avatars/<id>.png`, the curated pop-art that ships with the repo.
+4. **Telegram fallback.** If none of the above exist for a sub-agent, the resolver hits `getMe → getFile` once and caches the bot's profile photo. A `.no-avatar` flag stops it from re-attempting for 24h on misses.
+
+Upload from the dashboard's Agents page — the PUT handler magic-byte-sniffs every file (so a hostile rename can't slip an HTML page past the filter), enforces a 5 MB cap, and serializes concurrent writes via a per-agent mutex. ETags are mtime+size-based so the moment a new file lands on disk every open dashboard tab revalidates.
+
+**HTTP contract** (avatar endpoints, all JSON-shaped errors):
+
+| Status | When |
+|--------|------|
+| `400 {"error":"invalid id"}` | id fails the `[a-z0-9_-]+` regex |
+| `404 {"error":"agent not found"}` | id valid, but no `agent.yaml` exists for that agent (and id is not `main`) |
+| `204` | agent exists, resolver returned `null` (no mutable, no bundled, no Telegram). Caller renders initials. |
+| `200` + ETag | file resolved, served with correct `Content-Type` (PNG / JPEG / WebP sniffed at serve time) |
 
 ### Step 3: Configure each agent
 
@@ -1636,7 +1982,7 @@ for agent in main comms ops content research; do
 done
 
 # Remove all agents (stop everything)
-bash scripts/uninstall-launchd.sh
+npm run uninstall
 ```
 
 **How the plist files work:** Each agent has a `.plist` file in the `launchd/` directory that tells macOS how to run it. These are XML config files that specify the command, working directory, environment variables, and log paths. You shouldn't need to edit them unless you're adding a custom agent -- the install script handles everything.
@@ -1844,6 +2190,19 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setMyProfilePhoto" \
 ### Resource usage
 
 5 Node.js processes (main + 4 agents) use ~500MB RAM total at idle. Each `runAgent()` call spawns a separate Claude Code subprocess that exits when done. SQLite WAL mode handles concurrent access from all processes with no contention.
+
+---
+
+## Uninstalling
+
+To completely remove ClaudeClaw OS (services, config, database, temp files):
+
+```bash
+npm run uninstall
+cd .. && rm -rf claudeclaw-os
+```
+
+This stops all background services, removes `~/.claudeclaw`, clears the SQLite database and session data, and wipes temp files. The final `rm -rf` deletes the repo itself.
 
 ---
 

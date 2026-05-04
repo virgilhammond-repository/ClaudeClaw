@@ -38,27 +38,35 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
  * Safe to call even if no agents are configured — the registry will be empty.
  */
 export function initOrchestrator(): void {
-  const ids = listAgentIds();
-  agentRegistry = [];
+  rebuildRegistry();
+  logger.info(
+    { agents: agentRegistry.map((a) => a.id) },
+    'Orchestrator initialized',
+  );
+}
 
+function rebuildRegistry(): void {
+  const ids = listAgentIds();
+  const next: AgentInfo[] = [];
   for (const id of ids) {
     try {
       const config = loadAgentConfig(id);
-      agentRegistry.push({
-        id,
-        name: config.name,
-        description: config.description,
-      });
+      next.push({ id, name: config.name, description: config.description });
     } catch (err) {
       // Agent config is broken (e.g. missing token) — skip it but warn
       logger.warn({ agentId: id, err }, 'Skipping agent — config load failed');
     }
   }
+  agentRegistry = next;
+}
 
-  logger.info(
-    { agents: agentRegistry.map((a) => a.id) },
-    'Orchestrator initialized',
-  );
+/**
+ * Refresh the cached registry from disk. Call after createAgent/deleteAgent
+ * so @delegate: syntax sees newly-created agents without a process restart.
+ */
+export function refreshAgentRegistry(): void {
+  rebuildRegistry();
+  logger.info({ agents: agentRegistry.map((a) => a.id) }, 'Orchestrator registry refreshed');
 }
 
 /** Return all agents that were successfully loaded. */
@@ -133,7 +141,13 @@ export async function delegateToAgent(
   onProgress?: (msg: string) => void,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<DelegationResult> {
-  const agent = agentRegistry.find((a) => a.id === agentId);
+  let agent = agentRegistry.find((a) => a.id === agentId);
+  if (!agent) {
+    // Cache miss: an agent created via the dashboard wizard after this
+    // process started won't be in the cache yet. Refresh once and retry.
+    rebuildRegistry();
+    agent = agentRegistry.find((a) => a.id === agentId);
+  }
   if (!agent) {
     const available = agentRegistry.map((a) => a.id).join(', ') || '(none)';
     throw new Error(
@@ -156,7 +170,8 @@ export async function delegateToAgent(
   onProgress?.(`Delegating to ${agent.name}...`);
 
   try {
-    // Load agent config to get its system prompt
+    // Load agent config to get its system prompt and MCP allowlist
+    const agentConfig = loadAgentConfig(agentId);
     const claudeMdPath = resolveAgentClaudeMd(agentId);
     let systemPrompt = '';
     if (claudeMdPath) {
@@ -193,6 +208,8 @@ export async function delegateToAgent(
         undefined, // no progress callback for inner agent
         undefined, // use default model
         abortCtrl,
+        undefined, // no streaming for delegation
+        agentConfig.mcpServers,
       );
 
       clearTimeout(timer);

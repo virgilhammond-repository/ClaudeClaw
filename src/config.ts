@@ -20,9 +20,23 @@ const envConfig = readEnvFile([
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'AGENT_TIMEOUT_MS',
+  'AGENT_MAX_TURNS',
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
+  'MODEL_FALLBACK_CHAIN',
+  'SMART_ROUTING_ENABLED',
+  'SMART_ROUTING_CHEAP_MODEL',
+  'SHOW_COST_FOOTER',
+  'DAILY_COST_BUDGET',
+  'HOURLY_TOKEN_BUDGET',
+  'MEMORY_NUDGE_INTERVAL_TURNS',
+  'MEMORY_NUDGE_INTERVAL_HOURS',
+  'EXFILTRATION_GUARD_ENABLED',
+  'PROTECTED_ENV_VARS',
+  'WARROOM_ENABLED',
+  'WARROOM_PORT',
+  'STREAM_STRATEGY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -34,6 +48,7 @@ export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
 export let agentDefaultModel: string | undefined; // from agent.yaml
 export let agentObsidianConfig: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
 export let agentSystemPrompt: string | undefined; // loaded from agents/{id}/CLAUDE.md
+export let agentMcpAllowlist: string[] | undefined; // from agent.yaml mcp_servers
 
 export function setAgentOverrides(opts: {
   agentId: string;
@@ -42,6 +57,7 @@ export function setAgentOverrides(opts: {
   model?: string;
   obsidian?: { vault: string; folders: string[]; readOnly?: string[] };
   systemPrompt?: string;
+  mcpServers?: string[];
 }): void {
   AGENT_ID = opts.agentId;
   activeBotToken = opts.botToken;
@@ -49,6 +65,16 @@ export function setAgentOverrides(opts: {
   agentDefaultModel = opts.model;
   agentObsidianConfig = opts.obsidian;
   agentSystemPrompt = opts.systemPrompt;
+  agentMcpAllowlist = opts.mcpServers;
+}
+
+/** Update just the system prompt (CLAUDE.md content). Used by the
+ *  dashboard's agent-files PUT endpoint after editing main's CLAUDE.md
+ *  so the next NEW session in the bot picks up the change without
+ *  requiring a process restart. Sub-agents don't need this — the SDK
+ *  re-reads CLAUDE.md from cwd via settingSources on every turn. */
+export function updateAgentSystemPrompt(next: string | undefined): void {
+  agentSystemPrompt = next;
 }
 
 export const TELEGRAM_BOT_TOKEN =
@@ -117,6 +143,15 @@ export const AGENT_TIMEOUT_MS = parseInt(
   10,
 );
 
+// Maximum number of agentic turns (tool-use rounds) per query.
+// Prevents runaway loops when external services fail (e.g. stale cookies causing
+// 40+ sequential Bash retries). 0 = unlimited (SDK default).
+// Default: 30 turns, which is generous for complex skills but stops spirals.
+export const AGENT_MAX_TURNS = parseInt(
+  process.env.AGENT_MAX_TURNS || envConfig.AGENT_MAX_TURNS || '30',
+  10,
+);
+
 // Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
 // Override via CONTEXT_LIMIT in .env if using a different model variant.
 export const CONTEXT_LIMIT = parseInt(
@@ -149,7 +184,7 @@ export const GOOGLE_API_KEY =
 // 'off': no streaming, wait for full response.
 export type StreamStrategy = 'global-throttle' | 'single-agent-only' | 'off';
 export const STREAM_STRATEGY: StreamStrategy =
-  (process.env.STREAM_STRATEGY || 'off') as StreamStrategy;
+  (process.env.STREAM_STRATEGY || envConfig.STREAM_STRATEGY || 'off') as StreamStrategy;
 
 // ── Security ─────────────────────────────────────────────────────────
 // PIN lock: SHA-256 hash of your PIN. Generate: node -e "console.log(require('crypto').createHash('sha256').update('YOUR_PIN').digest('hex'))"
@@ -165,4 +200,64 @@ export const IDLE_LOCK_MINUTES = parseInt(
 // Emergency kill phrase. Sending this to any bot immediately stops all agents and exits.
 export const EMERGENCY_KILL_PHRASE =
   process.env.EMERGENCY_KILL_PHRASE || envConfig.EMERGENCY_KILL_PHRASE || '';
+
+// ── Hermes-inspired enhancements ────────────────────────────────────
+
+// Model fallback chain: comma-separated model IDs. When the primary model
+// fails with an overloaded/billing error, try the next model in the chain.
+// Example: "claude-sonnet-4-6,claude-haiku-4-5"
+export const MODEL_FALLBACK_CHAIN = (
+  process.env.MODEL_FALLBACK_CHAIN || envConfig.MODEL_FALLBACK_CHAIN || ''
+).split(',').map((s) => s.trim()).filter(Boolean);
+
+// Smart model routing: route simple messages to a cheap model.
+// Defaults to false to preserve existing behavior. Opt in via .env.
+export const SMART_ROUTING_ENABLED =
+  (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
+export const SMART_ROUTING_CHEAP_MODEL =
+  process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+
+// Cost footer on every response.
+// compact = model only, verbose = model + tokens, cost = model + $, full = everything
+export type CostFooterMode = 'off' | 'compact' | 'verbose' | 'cost' | 'full';
+export const SHOW_COST_FOOTER: CostFooterMode =
+  (process.env.SHOW_COST_FOOTER || envConfig.SHOW_COST_FOOTER || 'compact') as CostFooterMode;
+
+// Daily cost budget in USD. Warns at 80%. Set to 0 to disable (default).
+// Only useful for API/pay-per-use users. Subscription users should leave off.
+export const DAILY_COST_BUDGET = parseFloat(
+  process.env.DAILY_COST_BUDGET || envConfig.DAILY_COST_BUDGET || '0',
+);
+
+// Hourly token budget. Warns at 80%. Set to 0 to disable (default).
+export const HOURLY_TOKEN_BUDGET = parseInt(
+  process.env.HOURLY_TOKEN_BUDGET || envConfig.HOURLY_TOKEN_BUDGET || '0',
+  10,
+);
+
+// Memory nudge intervals
+export const MEMORY_NUDGE_INTERVAL_TURNS = parseInt(
+  process.env.MEMORY_NUDGE_INTERVAL_TURNS || envConfig.MEMORY_NUDGE_INTERVAL_TURNS || '10',
+  10,
+);
+export const MEMORY_NUDGE_INTERVAL_HOURS = parseInt(
+  process.env.MEMORY_NUDGE_INTERVAL_HOURS || envConfig.MEMORY_NUDGE_INTERVAL_HOURS || '2',
+  10,
+);
+
+// Secret exfiltration guard
+export const EXFILTRATION_GUARD_ENABLED =
+  (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
+export const PROTECTED_ENV_VARS = (
+  process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY'
+).split(',').map((s) => s.trim()).filter(Boolean);
+
+// ── War Room (voice meeting via Pipecat WebSocket) ──────────────────
+export const WARROOM_ENABLED =
+  (process.env.WARROOM_ENABLED || envConfig.WARROOM_ENABLED || 'false').toLowerCase() === 'true';
+export const WARROOM_PORT = parseInt(
+  process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
+  10,
+);
 

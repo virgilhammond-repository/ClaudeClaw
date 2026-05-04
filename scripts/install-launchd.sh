@@ -8,8 +8,17 @@ LAUNCHD_DIR="$PROJECT_DIR/launchd"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$PROJECT_DIR/logs"
 
+# Resolve the user's node binary so the plists work on any path layout
+# (Apple Silicon homebrew, Intel homebrew, nvm, asdf, system node).
+NODE_PATH="$(command -v node)"
+if [ -z "$NODE_PATH" ]; then
+  echo "Error: node not found on PATH. Install Node 20+ first." >&2
+  exit 1
+fi
+
 echo "ClaudeClaw launchd installer"
 echo "============================"
+echo "Using Node binary: $NODE_PATH"
 echo ""
 
 # Ensure logs directory exists
@@ -57,6 +66,7 @@ for plist in "$LAUNCHD_DIR"/com.claudeclaw.*.plist; do
   # Copy template and substitute placeholders with actual paths
   sed -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
       -e "s|__HOME__|$HOME|g" \
+      -e "s|__NODE_PATH__|$NODE_PATH|g" \
       "$plist" > "$dest"
   launchctl load "$dest"
 done

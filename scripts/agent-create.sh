@@ -70,8 +70,8 @@ echo ""
 echo "  1. Open Telegram and message @BotFather"
 echo "  2. Send /newbot"
 AGENT_LABEL=$(echo "$AGENT_ID" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')
-echo "  3. Name it something like 'Mark $AGENT_LABEL' or 'ClaudeClaw $AGENT_LABEL'"
-echo "  4. Give it a username like 'mark_${AGENT_ID}_bot'"
+echo "  3. Name it something like 'My $AGENT_LABEL Agent' or 'ClaudeClaw $AGENT_LABEL'"
+echo "  4. Give it a username like 'claw_${AGENT_ID}_bot'"
 echo "  5. Copy the token BotFather gives you"
 echo ""
 read -p "Paste the bot token here (or press Enter to skip): " BOT_TOKEN

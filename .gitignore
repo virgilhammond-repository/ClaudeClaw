@@ -16,6 +16,10 @@ workspace/
 *.db-shm
 *.sqlite
 *.sqlite3
+# Pre-migration backups produced by scripts/migrate.ts. Belt-and-suspenders
+# even though store/ above already covers the canonical location.
+*.db.pre-*.bak
+*.db.pre-*.bak-wal
 
 # Migration state — local only
 migrations/.applied.json
@@ -23,6 +27,15 @@ migrations/.applied.json
 # Logs
 *.log
 /tmp/claudeclaw.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+warroom/.venv/
+
+# Generated outputs — personal diagrams, not for sharing
+outputs/
 
 # macOS
 .DS_Store
@@ -35,8 +48,75 @@ migrations/.applied.json
 
 # Personal scripts — not for sharing
 scripts/waste-reminder.sh
+start-main.sh
+start-main.bat
+WARROOM_TEST_PLAN.md
+
+# ── Working docs / planning artifacts ─────────────────────────────────
+# Anything matching here is personal scratch work that must never reach
+# the public repo. Names are intentionally broad so a future accidentally-
+# named planning doc gets caught before it can be committed. README.md,
+# CLAUDE.md, CHANGELOG.md, CONTRIBUTING.md and the docs/ files explicitly
+# referenced from the README are NOT matched by these patterns.
+/PLAN*.md
+/SHIP*.md
+/TESTING*.md
+/AUDIT*.md
+/REPORT*.md
+/CHECKLIST*.md
+/REDTEAM*.md
+/SMOKE*.md
+/SCRATCH*.md
+/NOTES*.md
+/test_plan.md
+/update_plan.md
+/execute_plan_prompt.md
+/*_tldr.md
+/*_TLDR.md
+/PR[0-9]*_NOTES*.md
+/PR[0-9]*_TESTING*.md
+/docs/*-results.md
+/docs/*-smoke.md
+/docs/redteam-*.md
+/docs/scratch-*.md
+/docs/internal/
+
+# Diagram generation manifests are scratch input for scripts/generate-diagrams.py
+# Only scripts/diagrams-batch.json is the canonical, tracked manifest.
+/scripts/diagrams-test.json
+/scripts/diagrams-retry.json
+/scripts/diagrams-fix.json
+/scripts/diagrams-scratch*.json
+
+# Generated Windows service wrappers (contain hardcoded paths).
+# Note: launchd/ plists are committed with __PROJECT_DIR__ / __HOME__
+# placeholders, so they stay tracked.
+win/
+
+# War Room dev/test artifacts
+warroom/test-audio*.wav
+warroom/test_harness.py
+warroom/TEST_REPORT.md
+warroom/music.mp3
+warroom/avatars/backup-*/
+warroom/avatars/photoreal-backup/
 
 # Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+agents/*/avatar.png
+agents/*/.no-avatar
+agents/*/CLAUDE.md.backup
+agents/*/agent.yaml.backup
+
+# Local Claude Code skills — these are user-specific workflow configs
+# (absolute paths, private repo refs). Keep them out of the shared repo.
+.claude/skills/
+
+# Claudex (codex review loop) state and logs. Per-machine artifacts:
+# state files reference local PIDs and absolute paths; log files stream
+# every reviewer invocation. Both at the project root AND inside per-agent
+# CWDs (sub-agents start with cwd=agents/<id>).
+.claude/claudex/
+agents/*/.claude/claudex/

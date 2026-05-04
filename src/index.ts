@@ -1,10 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, refreshWarRoomRoster } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
@@ -12,9 +12,12 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
+import { runWarroomAvatarMigration } from './avatars.js';
+import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { getVenvPython, killProcess } from './platform.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -40,6 +43,7 @@ if (AGENT_ID !== 'main') {
     model: agentConfig.model,
     obsidian: agentConfig.obsidian,
     systemPrompt,
+    mcpServers: agentConfig.mcpServers,
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
@@ -88,10 +92,8 @@ function acquireLock(): void {
     if (fs.existsSync(PID_FILE)) {
       const old = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
       if (!isNaN(old) && old !== process.pid) {
-        try {
-          process.kill(old, 'SIGTERM');
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
-        } catch { /* already dead */ }
+        killProcess(old);
+        try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); } catch { /* ok */ }
       }
     }
   } catch { /* ignore */ }
@@ -121,7 +123,15 @@ async function main(): Promise<void> {
 
   acquireLock();
 
-  initDatabase();
+  try {
+    initDatabase();
+  } catch (err: any) {
+    logger.error('Database initialization failed: %s', err?.message || err);
+    if (err?.message?.includes('DB_ENCRYPTION_KEY')) {
+      logger.error('Fix: add DB_ENCRYPTION_KEY to .env. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    }
+    process.exit(1);
+  }
   logger.info('Database ready');
 
   // Initialize security (PIN lock, kill phrase, destructive confirmation, audit)
@@ -143,6 +153,12 @@ async function main(): Promise<void> {
     runDecaySweep();
     cleanupOldMissionTasks(7);
     setInterval(() => { runDecaySweep(); cleanupOldMissionTasks(7); }, 24 * 60 * 60 * 1000);
+
+    // One-time bundled→mutable avatar migration. After this lands, any
+    // previously user-uploaded main avatar that we wrote into the
+    // bundled namespace gets copied into STORE_DIR/avatars/main.png so
+    // the new resolver serves it as the mutable source-of-truth.
+    runWarroomAvatarMigration();
 
     // Memory consolidation: find patterns across recent memories every 30 minutes
     if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {
@@ -170,6 +186,132 @@ async function main(): Promise<void> {
   // Dashboard only runs in the main bot process
   if (AGENT_ID === 'main') {
     startDashboard(bot.api);
+
+    // War Room voice server (auto-start if enabled, with auto-respawn)
+    if (WARROOM_ENABLED) {
+      const { spawn } = await import('child_process');
+      const venvPython = getVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
+      const serverScript = path.join(PROJECT_ROOT, 'warroom', 'server.py');
+
+      // Write agent roster so the Python voice stack can discover agents.
+      // Shared helper so agent-create can call it too on new/delete.
+      refreshWarRoomRoster();
+
+      if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
+        // Pre-flight: verify Python dependencies are actually installed
+        const { spawnSync } = await import('child_process');
+        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+        if (depCheck.status !== 0) {
+          const msg = 'War Room Python dependencies not installed. Run:\n\n'
+            + 'source warroom/.venv/bin/activate\n'
+            + 'pip install -r warroom/requirements.txt\n\n'
+            + 'Then restart the bot.';
+          logger.error(msg);
+          if (ALLOWED_CHAT_ID) {
+            bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room could not start.\n\n${msg}`).catch(() => {});
+          }
+        } else {
+        // Dedicated log file for the warroom subprocess
+        const warroomLogPath = '/tmp/warroom-debug.log';
+        let warroomLogFd: number | null = null;
+        try {
+          warroomLogFd = fs.openSync(warroomLogPath, 'a');
+        } catch (err) {
+          logger.warn({ err, warroomLogPath }, 'Could not open warroom log');
+        }
+
+        const MAX_CRASH_RESPAWNS = 3;
+        // Time a process must stay alive without crashing before we treat
+        // its crash counter as "recovered" and reset it. The python server
+        // prints "ready" before it actually binds the WS transport, so a
+        // bind-time failure could print ready then crash in the same
+        // second. Resetting on first stdout chunk let that loop forever.
+        const STABLE_UPTIME_MS = 20_000;
+        let respawnAttempts = 0;
+        let shuttingDown = false;
+        let currentProc: ReturnType<typeof spawn> | null = null;
+
+        const spawnWarroom = (): void => {
+          if (shuttingDown) return;
+          const proc = spawn(venvPython, [serverScript], {
+            cwd: PROJECT_ROOT,
+            env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          currentProc = proc;
+
+          // Schedule the crash-counter reset based on *uptime*, not the
+          // readiness line. Cleared in the exit handler if the process
+          // dies before reaching STABLE_UPTIME_MS.
+          const stableResetHandle = setTimeout(() => {
+            respawnAttempts = 0;
+          }, STABLE_UPTIME_MS);
+
+          proc.stdout.once('data', (data: Buffer) => {
+            try {
+              const info = JSON.parse(data.toString().trim());
+              logger.info({ port: WARROOM_PORT, ws_url: info.ws_url, pid: proc.pid }, 'War Room server started');
+            } catch {
+              logger.info({ port: WARROOM_PORT, pid: proc.pid }, 'War Room server started');
+            }
+          });
+
+          // Forward stdout+stderr into the dedicated log file.
+          if (warroomLogFd !== null) {
+            const write = (buf: Buffer) => { try { fs.writeSync(warroomLogFd!, buf); } catch { /* ok */ } };
+            proc.stdout.on('data', write);
+            proc.stderr.on('data', write);
+          }
+
+          proc.on('exit', (code, signal) => {
+            clearTimeout(stableResetHandle);
+            if (shuttingDown) return;
+            const wasIntentional = signal === 'SIGTERM' || signal === 'SIGKILL' || signal === 'SIGINT';
+            logger.warn({ code, signal, pid: proc.pid, intentional: wasIntentional }, 'War Room server exited');
+            let delayMs: number;
+            if (wasIntentional) {
+              delayMs = 300;
+              respawnAttempts = 0;
+            } else {
+              respawnAttempts += 1;
+              if (respawnAttempts > MAX_CRASH_RESPAWNS) {
+                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check /tmp/warroom-debug.log for errors.`);
+                if (ALLOWED_CHAT_ID) {
+                  bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck /tmp/warroom-debug.log, fix the issue, and restart the bot.`).catch(() => {});
+                }
+                return;
+              }
+              delayMs = Math.min(30000, 500 * 2 ** Math.min(respawnAttempts, 6));
+            }
+            logger.info({ delayMs, attempt: respawnAttempts }, 'Respawning War Room server');
+            setTimeout(spawnWarroom, delayMs);
+          });
+        };
+
+        spawnWarroom();
+
+        // Clean up on main process exit.
+        const shutdownWarroom = () => {
+          shuttingDown = true;
+          try { currentProc?.kill(); } catch { /* ok */ }
+          if (warroomLogFd !== null) { try { fs.closeSync(warroomLogFd); } catch { /* ok */ } }
+        };
+        process.on('exit', shutdownWarroom);
+        process.on('SIGTERM', shutdownWarroom);
+        process.on('SIGINT', shutdownWarroom);
+        } // end dep check else
+      } else {
+        const missingVenv = !fs.existsSync(venvPython);
+        const missingScript = !fs.existsSync(serverScript);
+        const hint = missingVenv
+          ? 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
+          : 'warroom/server.py not found. Make sure the warroom/ directory exists.';
+        logger.warn('War Room enabled but cannot start: %s', hint);
+        if (ALLOWED_CHAT_ID) {
+          bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room is enabled but could not start.\n\n${hint}`).catch(() => {});
+        }
+      }
+    }
   }
 
   if (ALLOWED_CHAT_ID) {
@@ -187,6 +329,26 @@ async function main(): Promise<void> {
       },
       AGENT_ID,
     );
+
+    // Proactive OAuth health monitoring — alerts via Telegram before the
+    // Claude CLI token expires. OPT-IN as of 2026-04-10: users were getting
+    // spammed with "Expiring soon" alerts on fresh installs (reported by
+    // Benjamin Elkrieff in Discord), and people who don't monitor their
+    // phone can't re-auth in time anyway. Enable only if you actually want
+    // the alerts by setting OAUTH_HEALTH_ENABLED=true in .env.
+    const oauthHealthEnv = (await import('./env.js')).readEnvFile(['OAUTH_HEALTH_ENABLED']);
+    if ((oauthHealthEnv.OAUTH_HEALTH_ENABLED || '').trim().toLowerCase() === 'true') {
+      initOAuthHealthCheck(async (text) => {
+        const { splitMessage } = await import('./bot.js');
+        for (const chunk of splitMessage(text)) {
+          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
+            logger.error({ err }, 'OAuth health alert failed'),
+          );
+        }
+      });
+    } else {
+      logger.info('OAuth health check disabled (set OAUTH_HEALTH_ENABLED=true in .env to enable)');
+    }
   } else {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }
@@ -202,6 +364,14 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown());
 
   logger.info({ agentId: AGENT_ID }, 'Starting ClaudeClaw...');
+
+  // Clear any existing webhook so polling works cleanly (e.g., if token was
+  // previously used with a webhook-based bot or another ClaudeClaw instance).
+  try {
+    await bot.api.deleteWebhook({ drop_pending_updates: false });
+  } catch (err) {
+    logger.warn({ err }, 'Could not clear webhook (non-fatal)');
+  }
 
   await bot.start({
     onStart: (botInfo) => {

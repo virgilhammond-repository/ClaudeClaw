@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 
 import { GOOGLE_API_KEY } from './config.js';
 import { logger } from './logger.js';
+import { requireEnabled } from './kill-switches.js';
 
 let client: GoogleGenAI | null = null;
 
@@ -20,18 +21,31 @@ function getClient(): GoogleGenAI {
  */
 export async function generateContent(
   prompt: string,
-  model = 'gemini-3-flash-preview',
+  model = 'gemini-2.0-flash',
 ): Promise<string> {
+  // Kill-switch: refuse Gemini calls when LLM_SPAWN_ENABLED is off.
+  // Memory ingestion, classifier paths, and any other generateContent
+  // caller all flow through here.
+  requireEnabled('LLM_SPAWN_ENABLED');
   const ai = getClient();
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    },
-  });
-  return response.text ?? '';
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    });
+    if (!response.text) {
+      logger.warn({ model }, 'Gemini returned empty response');
+      return '';
+    }
+    return response.text;
+  } catch (err) {
+    logger.error({ err, model }, 'Gemini generateContent failed');
+    throw err;
+  }
 }
 
 /**
@@ -39,15 +53,28 @@ export async function generateContent(
  * Returns null if parsing fails.
  */
 export function parseJsonResponse<T>(text: string): T | null {
-  try {
-    // Strip markdown code fences if present
-    const cleaned = text
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-    return JSON.parse(cleaned) as T;
-  } catch (err) {
-    logger.warn({ err, text: text.slice(0, 200) }, 'Failed to parse Gemini JSON response');
-    return null;
+  // Try four extraction strategies in order, most permissive last:
+  //   1. Bare JSON (Gemini's responseMimeType=application/json case)
+  //   2. JSON inside ```json ... ``` fences (Haiku tends to wrap)
+  //   3. JSON inside generic ``` ... ``` fences
+  //   4. First {...} block in the text (Haiku also tends to add prose
+  //      AFTER the fence, which broke the previous regex anchor).
+  const candidates: string[] = [];
+  const trimmed = text.trim();
+  candidates.push(trimmed);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  const firstObj = trimmed.match(/\{[\s\S]*\}/);
+  if (firstObj) candidates.push(firstObj[0]);
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // try next
+    }
   }
+  logger.warn({ text: text.slice(0, 200) }, 'Failed to parse JSON response');
+  return null;
 }

@@ -1,15 +1,19 @@
-import { agentObsidianConfig, GOOGLE_API_KEY } from './config.js';
+import { agentObsidianConfig, GOOGLE_API_KEY, MEMORY_NUDGE_INTERVAL_TURNS, MEMORY_NUDGE_INTERVAL_HOURS } from './config.js';
 import {
   batchUpdateMemoryRelevance,
   decayMemories,
   getConsolidationsWithEmbeddings,
+  getLastMemorySaveTime,
   getOtherAgentActivity,
   getRecentConsolidations,
   getRecentHighImportanceMemories,
+  getRecentWarRoomTranscriptForChat,
+  getTurnCountSinceTimestamp,
   logConversationTurn,
   pruneConversationLog,
   pruneSlackMessages,
   pruneWaMessages,
+  pruneWarRoomMeetings,
   searchConsolidations,
   searchConversationHistory,
   searchMemories,
@@ -36,11 +40,38 @@ export interface MemoryContextResult {
   surfacedMemorySummaries: Map<number, string>;
 }
 
+export interface BuildMemoryContextOpts {
+  /** Include consolidation insights (Layer 3). Default true.
+   *  War room callers pass false because the consolidations table lacks
+   *  agent_id and would leak across-agent insights. */
+  includeConsolidations?: boolean;
+  /** Include `getOtherAgentActivity` block (Layer 4). Default true.
+   *  War room callers pass false to keep strict per-agent isolation. */
+  includeTeamActivity?: boolean;
+  /** Include conversation history recall (Layer 5). Default true. */
+  includeRecallHistory?: boolean;
+  /** Strict per-agent retrieval. When omitted, memories from any agent in
+   *  the chat are eligible (legacy Telegram behavior). When set, search
+   *  is constrained to memories with `agent_id = strictAgentId`. */
+  strictAgentId?: string;
+  /** When set, append a war-room transcript bridge (last N rows from any
+   *  meeting in this chat, optionally excluding the current meeting). */
+  warRoomBridge?: { excludeMeetingId?: string; limit?: number };
+}
+
 export async function buildMemoryContext(
   chatId: string,
   userMessage: string,
   agentId = 'main',
+  opts: BuildMemoryContextOpts = {},
 ): Promise<MemoryContextResult> {
+  const {
+    includeConsolidations = true,
+    includeTeamActivity = true,
+    includeRecallHistory = true,
+    strictAgentId,
+    warRoomBridge,
+  } = opts;
   const seen = new Set<number>();
   const summaryMap = new Map<number, string>();
   const memLines: string[] = [];
@@ -59,7 +90,7 @@ export async function buildMemoryContext(
   // NOTE: We do NOT touch memories here. The feedback loop (evaluateMemoryRelevance)
   // is the only thing that should boost salience/accessed_at. Touching at retrieval
   // creates a positive feedback loop where noise stays fresh forever.
-  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding);
+  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding, strictAgentId);
   for (const mem of searched) {
     seen.add(mem.id);
     summaryMap.set(mem.id, mem.summary);
@@ -69,7 +100,7 @@ export async function buildMemoryContext(
   }
 
   // Layer 2: recent high-importance memories (deduplicated)
-  const recent = getRecentHighImportanceMemories(chatId, 5);
+  const recent = getRecentHighImportanceMemories(chatId, 5, strictAgentId);
   for (const mem of recent) {
     if (seen.has(mem.id)) continue;
     seen.add(mem.id);
@@ -80,37 +111,63 @@ export async function buildMemoryContext(
   }
 
   // Layer 3: consolidation insights (semantic search with LIKE fallback)
+  // The consolidations table has no agent_id column, so this layer is
+  // skipped when strictAgentId is set (war-room callers).
   const insightLines: string[] = [];
 
-  if (queryEmbedding && queryEmbedding.length > 0) {
-    const candidates = getConsolidationsWithEmbeddings(chatId);
-    if (candidates.length > 0) {
-      const scored = candidates
-        .map((c) => ({ ...c, score: cosineSimilarity(queryEmbedding, c.embedding) }))
-        .filter((s) => s.score > 0.3)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 2);
-      for (const c of scored) {
-        insightLines.push(`- ${c.insight}`);
+  if (includeConsolidations && !strictAgentId) {
+    if (queryEmbedding && queryEmbedding.length > 0) {
+      const candidates = getConsolidationsWithEmbeddings(chatId);
+      if (candidates.length > 0) {
+        const scored = candidates
+          .map((c) => ({ ...c, score: cosineSimilarity(queryEmbedding, c.embedding) }))
+          .filter((s) => s.score > 0.3)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 2);
+        for (const c of scored) {
+          insightLines.push(`- ${c.insight}`);
+        }
+      }
+    }
+
+    if (insightLines.length === 0) {
+      const consolidations = searchConsolidations(chatId, userMessage, 2);
+      if (consolidations.length === 0) {
+        const recentInsights = getRecentConsolidations(chatId, 2);
+        for (const c of recentInsights) {
+          insightLines.push(`- ${c.insight}`);
+        }
+      } else {
+        for (const c of consolidations) {
+          insightLines.push(`- ${c.insight}`);
+        }
       }
     }
   }
 
-  if (insightLines.length === 0) {
-    const consolidations = searchConsolidations(chatId, userMessage, 2);
-    if (consolidations.length === 0) {
-      const recentInsights = getRecentConsolidations(chatId, 2);
-      for (const c of recentInsights) {
-        insightLines.push(`- ${c.insight}`);
-      }
-    } else {
-      for (const c of consolidations) {
-        insightLines.push(`- ${c.insight}`);
-      }
+  // Layer 6 (computed early so we can decide whether to short-circuit):
+  // war-room transcript bridge.
+  let warRoomLines: string[] = [];
+  if (warRoomBridge) {
+    const cutoff = Math.floor(Date.now() / 1000) - 24 * 3600;
+    const rows = getRecentWarRoomTranscriptForChat(chatId, {
+      limit: warRoomBridge.limit ?? 10,
+      sinceTs: cutoff,
+      excludeMeetingId: warRoomBridge.excludeMeetingId,
+    });
+    if (rows.length > 0) {
+      warRoomLines = rows
+        .slice()
+        .reverse() // chronological
+        .map((r) => {
+          const speaker = r.speaker === 'user' ? 'User' : r.speaker;
+          const snippet = r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text;
+          return `- ${speaker}: ${snippet}`;
+        });
     }
   }
 
-  if (memLines.length === 0 && insightLines.length === 0 && !agentObsidianConfig) {
+  if (memLines.length === 0 && insightLines.length === 0 && warRoomLines.length === 0 && !agentObsidianConfig) {
     return { contextText: '', surfacedMemoryIds: [], surfacedMemorySummaries: new Map() };
   }
 
@@ -131,36 +188,47 @@ export async function buildMemoryContext(
     parts.push(blocks.join('\n'));
   }
 
-  // Layer 4: Cross-agent activity awareness
-  const teamActivity = getOtherAgentActivity(agentId, 24, 10);
-  if (teamActivity.length > 0) {
-    const activityLines = teamActivity.map((entry) => {
-      // Note: created_at is unix seconds, Date.now() is ms, so divide by 1000
-      const ago = Math.round((Date.now() / 1000 - entry.created_at) / 60);
-      const timeStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
-      return `- [${entry.agent_id}] ${timeStr}: ${entry.summary}`;
-    });
-    parts.push(`[Team activity — what other agents have done recently]\n${activityLines.join('\n')}\n[End team activity]`);
+  // Layer 4: Cross-agent activity awareness (skipped for strict per-agent
+  // war-room callers).
+  if (includeTeamActivity) {
+    const teamActivity = getOtherAgentActivity(agentId, 24, 10);
+    if (teamActivity.length > 0) {
+      const activityLines = teamActivity.map((entry) => {
+        // Note: created_at is unix seconds, Date.now() is ms, so divide by 1000
+        const ago = Math.round((Date.now() / 1000 - entry.created_at) / 60);
+        const timeStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+        return `- [${entry.agent_id}] ${timeStr}: ${entry.summary}`;
+      });
+      parts.push(`[Team activity — what other agents have done recently]\n${activityLines.join('\n')}\n[End team activity]`);
+    }
   }
 
   // Layer 5: Conversation history recall
   // When the user is asking about past conversations, search the conversation_log
   // for matching exchanges. This gives the agent access to the full context that
   // memory extraction may have compressed into a single sentence.
-  const recallKeywords = /\bremember\b|\brecall\b|\byesterday\b|\blast time\b|\bwe talked\b|\bwe discussed\b|\bwhat do you know\b|\bdo you know\b|\bwhat did we\b|\bpreviously\b|\bearlier\b|\blast week\b|\bfew days\b/i;
-  if (recallKeywords.test(userMessage)) {
-    const historyTurns = searchConversationHistory(chatId, userMessage, agentId, 7, 10);
-    if (historyTurns.length > 0) {
-      const historyLines = historyTurns
-        .reverse() // chronological
-        .map((t) => {
-          const daysAgo = Math.round((Date.now() / 1000 - t.created_at) / 86400);
-          const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
-          const role = t.role === 'user' ? 'User' : 'You';
-          return `[${timeStr}] ${role}: ${t.content.slice(0, 300)}`;
-        });
-      parts.push(`[Conversation history recall]\n${historyLines.join('\n')}\n[End conversation history]`);
+  if (includeRecallHistory) {
+    const recallKeywords = /\bremember\b|\brecall\b|\byesterday\b|\blast time\b|\bwe talked\b|\bwe discussed\b|\bwhat do you know\b|\bdo you know\b|\bwhat did we\b|\bpreviously\b|\bearlier\b|\blast week\b|\bfew days\b/i;
+    if (recallKeywords.test(userMessage)) {
+      const historyTurns = searchConversationHistory(chatId, userMessage, agentId, 7, 10);
+      if (historyTurns.length > 0) {
+        const historyLines = historyTurns
+          .reverse() // chronological
+          .map((t) => {
+            const daysAgo = Math.round((Date.now() / 1000 - t.created_at) / 86400);
+            const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
+            const role = t.role === 'user' ? 'User' : 'You';
+            return `[${timeStr}] ${role}: ${t.content.slice(0, 300)}`;
+          });
+        parts.push(`[Conversation history recall]\n${historyLines.join('\n')}\n[End conversation history]`);
+      }
     }
+  }
+
+  // Layer 6: war-room transcript bridge (Telegram callers can opt-in to
+  // see what was said in recent text war rooms for this chat).
+  if (warRoomLines.length > 0) {
+    parts.push(`[War room earlier — most recent last]\n${warRoomLines.join('\n')}\n[End war room]`);
   }
 
   const obsidianBlock = buildObsidianContext(agentObsidianConfig);
@@ -214,9 +282,16 @@ export function runDecaySweep(): void {
   // Enforce 3-day retention on messaging data
   const wa = pruneWaMessages(3);
   const slack = pruneSlackMessages(3);
-  if (wa.messages + wa.outbox + wa.map + slack > 0) {
+  // 90-day retention on ended war-room meetings (configurable later via
+  // env var if needed). Without this, warroom_meetings + warroom_transcript
+  // grow unbounded — every voice/text meeting persists forever.
+  const wr = pruneWarRoomMeetings(90);
+  if (wa.messages + wa.outbox + wa.map + slack + wr.meetings + wr.convLog > 0) {
     logger.info(
-      { wa_messages: wa.messages, wa_outbox: wa.outbox, wa_map: wa.map, slack },
+      {
+        wa_messages: wa.messages, wa_outbox: wa.outbox, wa_map: wa.map, slack,
+        warroom_meetings: wr.meetings, warroom_conv_log: wr.convLog,
+      },
       'Retention pruning complete',
     );
   }
@@ -260,6 +335,31 @@ ${memoryList}`;
     // Non-fatal, never block
   }
 }
+
+/**
+ * Check whether a memory nudge should be injected into the context.
+ * Returns true if enough turns or time have passed since the last memory save.
+ */
+export function shouldNudgeMemory(chatId: string, agentId = 'main'): boolean {
+  const lastSave = getLastMemorySaveTime(chatId, agentId);
+
+  // Never nudge if no memories have been saved yet (first conversation)
+  if (lastSave === null) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const hoursSinceSave = (now - lastSave) / 3600;
+
+  // Time-based nudge
+  if (hoursSinceSave >= MEMORY_NUDGE_INTERVAL_HOURS) return true;
+
+  // Turn-based nudge
+  const turnsSinceSave = getTurnCountSinceTimestamp(chatId, lastSave, agentId);
+  if (turnsSinceSave >= MEMORY_NUDGE_INTERVAL_TURNS) return true;
+
+  return false;
+}
+
+export const MEMORY_NUDGE_TEXT = '[Memory nudge: It has been a while since anything was saved to long-term memory. If any decisions, preferences, or important facts came up in this conversation, consider mentioning them so they can be remembered.]';
 
 /** Safely parse a JSON array string, returning [] on failure. */
 function safeParse(json: string): string[] {

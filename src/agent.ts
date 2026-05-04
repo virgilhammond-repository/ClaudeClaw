@@ -1,8 +1,79 @@
+import fs from 'fs';
+import path from 'path';
+
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd } from './config.js';
+import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
+import { classifyError, AgentError } from './errors.js';
 import { logger } from './logger.js';
+import { getScrubbedSdkEnv } from './security.js';
+import { requireEnabled } from './kill-switches.js';
+
+// ── MCP server loading ──────────────────────────────────────────────
+// The Agent SDK's settingSources loads CLAUDE.md and permissions from
+// project/user settings, but does NOT load mcpServers from those files.
+// We read them ourselves and pass them via the `mcpServers` option.
+
+export interface McpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Merge MCP server configs from user settings (~/.claude/settings.json) and
+ * project settings (.claude/settings.json in cwd), optionally filtered by
+ * an allowlist (e.g. from an agent's agent.yaml `mcp_servers` field).
+ *
+ * Exported so the voice bridge can reuse the exact same loader the text
+ * bot uses — keeping behavior consistent across channels.
+ */
+export function loadMcpServers(allowlist?: string[], projectCwd?: string): Record<string, McpStdioConfig> {
+  const merged: Record<string, McpStdioConfig> = {};
+
+  // Load from project settings (.claude/settings.json in cwd). `projectCwd`
+  // lets callers (e.g. the voice bridge) target a specific sub-agent's
+  // settings file without needing the module-level `agentCwd` to be set.
+  const projectSettings = path.join(projectCwd ?? agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
+  // Load from user settings (~/.claude/settings.json)
+  const userSettings = path.join(
+    process.env.HOME ?? '/tmp',
+    '.claude',
+    'settings.json',
+  );
+
+  for (const file of [userSettings, projectSettings]) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const servers = raw?.mcpServers;
+      if (servers && typeof servers === 'object') {
+        for (const [name, config] of Object.entries(servers)) {
+          const cfg = config as Record<string, unknown>;
+          if (cfg.command && typeof cfg.command === 'string') {
+            merged[name] = {
+              command: cfg.command,
+              ...(cfg.args ? { args: cfg.args as string[] } : {}),
+              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // If an allowlist is provided, only keep the MCPs in that list
+  if (allowlist) {
+    const allowed = new Set(allowlist);
+    for (const name of Object.keys(merged)) {
+      if (!allowed.has(name)) delete merged[name];
+    }
+  }
+
+  return merged;
+}
 
 export interface UsageInfo {
   inputTokens: number;
@@ -109,19 +180,25 @@ export async function runAgent(
   model?: string,
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
 ): Promise<AgentResult> {
+  // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
+  // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
+  // a "feature disabled" message rather than retry. This is the SINGLE
+  // chokepoint for Telegram, scheduler, mission worker, and any other
+  // path that ends up here; the war-room and voice paths have their own
+  // requireEnabled calls at their own SDK boundaries.
+  requireEnabled('LLM_SPAWN_ENABLED');
+
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
-
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
-    sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
-  }
-  if (secrets.ANTHROPIC_API_KEY) {
-    sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  }
+  // Strip secret-shaped env vars (DASHBOARD_TOKEN, third-party API keys,
+  // DB_ENCRYPTION_KEY, etc.) before handing process.env to the SDK
+  // subprocess. A prompt-injected agent that calls `env` or `cat .env`
+  // can otherwise read every credential the parent process holds.
+  const sdkEnv = getScrubbedSdkEnv(secrets);
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
@@ -137,10 +214,16 @@ export async function runAgent(
   const typingInterval = setInterval(onTyping, 4000);
 
   try {
+    // Load MCP servers from project + user settings files, filtered by agent allowlist
+    const mcpServers = loadMcpServers(mcpAllowlist);
+    const mcpServerNames = Object.keys(mcpServers);
     logger.info(
-      { sessionId: sessionId ?? 'new', messageLen: message.length },
+      { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
       'Starting agent query',
     );
+
+    // SDK Options.mcpServers expects Record<string, McpServerConfig>
+    const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
 
     for await (const event of query({
       prompt: singleTurn(message),
@@ -159,8 +242,15 @@ export async function runAgent(
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
 
+        // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
+        // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
+        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
+
+        // MCP servers loaded from .claude/settings.json and ~/.claude/settings.json
+        ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
 
         // Stream partial text so Telegram can show progressive updates
         includePartialMessages: !!onStreamText,
@@ -289,10 +379,95 @@ export async function runAgent(
       logger.info('Agent query aborted by user');
       return { text: null, newSessionId, usage, aborted: true };
     }
-    throw err;
+
+    // Classify the error and attach context-aware metadata
+    const contextTokens = lastCallInputTokens || lastCallCacheRead || 0;
+    const classified = classifyError(err, contextTokens || undefined);
+    logger.error(
+      { category: classified.category, recovery: classified.recovery, originalMsg: (err as Error)?.message },
+      'Agent query failed (classified)',
+    );
+    throw classified;
   } finally {
     clearInterval(typingInterval);
   }
 
   return { text: resultText, newSessionId, usage };
+}
+
+// ── Retry wrapper ─────────────────────────────────────────────────
+
+const MAX_RETRIES = 2;
+const BACKOFF_BASE_MS = 2000;
+const BACKOFF_MULTIPLIER = 4; // 2s, 8s
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run the agent with automatic retry for transient errors.
+ * Only retries errors where recovery.shouldRetry is true.
+ * Calls onRetry before each retry so the caller can notify the user.
+ */
+export async function runAgentWithRetry(
+  message: string,
+  sessionId: string | undefined,
+  onTyping: () => void,
+  onProgress?: (event: AgentProgressEvent) => void,
+  model?: string,
+  abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  onRetry?: (attempt: number, error: AgentError) => void,
+  fallbackModels?: string[],
+  mcpAllowlist?: string[],
+): Promise<AgentResult> {
+  let lastError: AgentError | undefined;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const currentModel =
+        attempt === 0 ? model
+        : lastError?.recovery.shouldSwitchModel && fallbackModels?.length
+          ? fallbackModels[Math.min(attempt - 1, fallbackModels.length - 1)]
+          : model;
+
+      return await runAgent(
+        message, sessionId, onTyping, onProgress,
+        currentModel, abortController, onStreamText,
+        mcpAllowlist,
+      );
+    } catch (err) {
+      if (!(err instanceof AgentError)) throw err;
+      lastError = err;
+
+      // Don't retry non-retryable errors or if aborted
+      if (!err.recovery.shouldRetry || abortController?.signal.aborted) {
+        throw err;
+      }
+
+      // Don't retry past the limit
+      if (attempt >= MAX_RETRIES) {
+        throw err;
+      }
+
+      const delayMs = Math.min(
+        BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt),
+        60000,
+      );
+      // Add jitter (0-25% of delay)
+      const jitter = Math.random() * delayMs * 0.25;
+
+      logger.warn(
+        { attempt: attempt + 1, category: err.category, delayMs: Math.round(delayMs + jitter) },
+        'Retrying agent query',
+      );
+
+      onRetry?.(attempt + 1, err);
+      await sleep(delayMs + jitter);
+    }
+  }
+
+  // Should never reach here, but TypeScript needs it
+  throw lastError ?? new Error('Retry loop exhausted');
 }

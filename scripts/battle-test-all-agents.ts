@@ -251,7 +251,7 @@ async function run() {
   // ── Cleanup test data ─────────────────────────────────────────
 
   console.log('\n━━━ CLEANUP ━━━');
-  // Leave the data for now so Mark can inspect on the dashboard
+  // Leave the data for now so the user can inspect on the dashboard
   console.log('  Test data left in place for dashboard inspection.');
   console.log('  To clean: sqlite3 store/claudeclaw.db "PRAGMA trusted_schema=ON; DELETE FROM memories WHERE chat_id=\'[CHAT_ID]\'; DELETE FROM consolidations WHERE chat_id=\'[CHAT_ID]\';"');
 

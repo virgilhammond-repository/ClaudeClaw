@@ -5,9 +5,29 @@ vi.mock('./gemini.js', () => ({
   parseJsonResponse: vi.fn(),
 }));
 
+// Mock the Claude SDK so the new Anthropic-Haiku ingestion path doesn't
+// actually try to spawn a subprocess in tests. We force it to throw so
+// the code falls back to the mocked Gemini path the existing tests
+// already exercise.
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: vi.fn(() => {
+    async function* failing(): AsyncGenerator<never> {
+      throw new Error('mocked: Claude SDK unavailable in test env');
+    }
+    return failing();
+  }),
+}));
+
+vi.mock('./security.js', () => ({
+  getScrubbedSdkEnv: vi.fn(() => ({})),
+}));
+
+vi.mock('./env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
 vi.mock('./db.js', () => ({
-  saveStructuredMemory: vi.fn(() => 1),
-  saveMemoryEmbedding: vi.fn(),
+  saveStructuredMemoryAtomic: vi.fn(() => 1),
   getMemoriesWithEmbeddings: vi.fn(() => []),
 }));
 
@@ -22,11 +42,11 @@ vi.mock('./logger.js', () => ({
 
 import { ingestConversationTurn } from './memory-ingest.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
-import { saveStructuredMemory } from './db.js';
+import { saveStructuredMemoryAtomic } from './db.js';
 
 const mockGenerateContent = vi.mocked(generateContent);
 const mockParseJson = vi.mocked(parseJsonResponse);
-const mockSave = vi.mocked(saveStructuredMemory);
+const mockSave = vi.mocked(saveStructuredMemoryAtomic);
 
 describe('ingestConversationTurn', () => {
   beforeEach(() => {
@@ -107,6 +127,7 @@ describe('ingestConversationTurn', () => {
       ['dark mode', 'UI'],
       ['preferences', 'UI'],
       0.8,
+      expect.any(Array),
       'conversation',
       'main',
     );
@@ -199,6 +220,7 @@ describe('ingestConversationTurn', () => {
       [],
       [],
       1.0,  // clamped
+      expect.any(Array),
       'conversation',
       'main',
     );
@@ -274,6 +296,7 @@ describe('ingestConversationTurn', () => {
       [],  // defaults to empty
       [],  // defaults to empty
       0.5,
+      expect.any(Array),
       'conversation',
       'main',
     );

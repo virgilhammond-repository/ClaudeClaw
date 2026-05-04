@@ -1,11 +1,101 @@
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
-import { getMemoriesWithEmbeddings, saveStructuredMemory, saveMemoryEmbedding } from './db.js';
+import { getMemoriesWithEmbeddings, saveStructuredMemoryAtomic } from './db.js';
 import { logger } from './logger.js';
+import { readEnvFile } from './env.js';
+import { getScrubbedSdkEnv } from './security.js';
 
 // Callback for notifying when a high-importance memory is created.
 // Set by bot.ts to send a Telegram notification.
 let onHighImportanceMemory: ((memoryId: number, summary: string, importance: number) => void) | null = null;
+
+// Quota-aware backoff. When Gemini returns 429 RESOURCE_EXHAUSTED we
+// pause ingestion for INGEST_QUOTA_BACKOFF_MS instead of retrying on
+// every turn — otherwise the log fills with the same error and we burn
+// quota the moment it refreshes. After the window we try again; if it
+// still 429s we reset the cooldown. Surface the suspended state via
+// `getIngestionQuotaStatus` so /api/health can show "memory paused".
+const INGEST_QUOTA_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+let _ingestSuspendedUntil = 0;
+let _last429At = 0;
+
+function isQuotaError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|RESOURCE_EXHAUSTED|quota/i.test(msg);
+}
+
+/**
+ * Extract a memory via Claude Haiku through the Agent SDK on the OAuth
+ * subscription path. Used as the PRIMARY extractor — Gemini was hitting
+ * 429 RESOURCE_EXHAUSTED on free-tier quota, leaving every conversation
+ * with no long-term memory written. Haiku via OAuth uses the same auth
+ * the agents use; no extra API key required.
+ *
+ * Returns the raw JSON string the model produced (or empty string on
+ * failure). Caller is responsible for parsing + validation, same as
+ * before — keeps the contract identical to generateContent().
+ */
+export async function extractViaClaude(prompt: string, timeoutMs = 15_000): Promise<string> {
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  const env = getScrubbedSdkEnv(secrets);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let text = '';
+  try {
+    async function* turn(): AsyncGenerator<{
+      type: 'user';
+      message: { role: 'user'; content: string };
+      parent_tool_use_id: null;
+      session_id: string;
+    }> {
+      yield {
+        type: 'user',
+        message: { role: 'user', content: prompt },
+        parent_tool_use_id: null,
+        session_id: '',
+      };
+    }
+    for await (const ev of query({
+      prompt: turn(),
+      options: {
+        model: 'claude-haiku-4-5-20251001',
+        allowedTools: [],
+        disallowedTools: ['*'],
+        settingSources: [],
+        maxTurns: 1,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        env,
+        abortController: abort,
+      } as any,
+    })) {
+      const e = ev as Record<string, unknown>;
+      if (e.type === 'result' && typeof e.result === 'string') {
+        text = e.result;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : err }, 'Memory extraction (Claude Haiku) failed');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  return text;
+}
+
+export function getIngestionQuotaStatus(): {
+  suspended: boolean;
+  suspendedUntil: number | null;
+  last429At: number | null;
+} {
+  const now = Date.now();
+  return {
+    suspended: now < _ingestSuspendedUntil,
+    suspendedUntil: _ingestSuspendedUntil > now ? _ingestSuspendedUntil : null,
+    last429At: _last429At > 0 ? _last429At : null,
+  };
+}
 
 export function setHighImportanceCallback(cb: (memoryId: number, summary: string, importance: number) => void): void {
   onHighImportanceMemory = cb;
@@ -77,12 +167,28 @@ export async function ingestConversationTurn(
   // Hard filter: skip very short messages and commands
   if (userMessage.length <= 15 || userMessage.startsWith('/')) return false;
 
+  // If we recently hit a quota wall, don't even try — it'll just spam the
+  // log with the same RESOURCE_EXHAUSTED error every turn. Surface the
+  // suspended state via getIngestionQuotaStatus so /api/health can warn.
+  if (Date.now() < _ingestSuspendedUntil) return false;
+
   try {
     const prompt = EXTRACTION_PROMPT
       .replace('{USER_MESSAGE}', userMessage.slice(0, 2000))
       .replace('{ASSISTANT_RESPONSE}', assistantResponse.slice(0, 2000));
 
-    const raw = await generateContent(prompt);
+    // Primary path: Claude Haiku via OAuth (no API key, no quota wall).
+    // We swapped from Gemini because the free-tier RESOURCE_EXHAUSTED
+    // was hitting on every turn and silently killing memory ingestion.
+    let raw: string;
+    try {
+      raw = await extractViaClaude(prompt);
+    } catch (claudeErr) {
+      // Fallback: try Gemini if it has a key configured. The 429 backoff
+      // path inside the catch below handles quota errors gracefully.
+      logger.warn({ err: claudeErr instanceof Error ? claudeErr.message : claudeErr }, 'Claude extraction failed; falling back to Gemini');
+      raw = await generateContent(prompt);
+    }
     const result = parseJsonResponse<ExtractionResult & { skip?: boolean }>(raw);
 
     if (!result || result.skip) return false;
@@ -125,21 +231,17 @@ export async function ingestConversationTurn(
       }
     }
 
-    const memoryId = saveStructuredMemory(
+    const memoryId = saveStructuredMemoryAtomic(
       chatId,
       userMessage,
       result.summary,
       result.entities ?? [],
       result.topics ?? [],
       importance,
+      embedding,
       'conversation',
       agentId,
     );
-
-    // Store the embedding we already generated
-    if (embedding.length > 0) {
-      saveMemoryEmbedding(memoryId, embedding);
-    }
 
     // Notify on high-importance memories so the user can pin them
     if (importance >= 0.8 && onHighImportanceMemory) {
@@ -152,7 +254,24 @@ export async function ingestConversationTurn(
     );
     return true;
   } catch (err) {
-    // Gemini failure should never block the bot
+    // Gemini failure should never block the bot.
+    // 429 / quota errors deserve a cooldown — otherwise every turn fires
+    // the same failed call and floods the log. Suspend ingestion for the
+    // configured window; subsequent calls return early until the window
+    // expires. Drop the log level on the suspension itself so we don't
+    // re-warn every time the cooldown is hit.
+    if (isQuotaError(err)) {
+      _last429At = Date.now();
+      const wasSuspended = _ingestSuspendedUntil > Date.now();
+      _ingestSuspendedUntil = Date.now() + INGEST_QUOTA_BACKOFF_MS;
+      if (!wasSuspended) {
+        logger.warn(
+          { backoffMs: INGEST_QUOTA_BACKOFF_MS },
+          'Memory ingestion quota exceeded (Gemini 429). Suspending ingestion until cooldown expires.',
+        );
+      }
+      return false;
+    }
     logger.error({ err }, 'Memory ingestion failed (Gemini)');
     return false;
   }

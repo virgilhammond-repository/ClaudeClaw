@@ -25,6 +25,31 @@ const PROJECT_ROOT = path.resolve(
   '..',
 );
 
+/**
+ * When a Windows step can't finish, print a copy-paste Claude Code prompt
+ * so the user can self-serve a fix without filing a GitHub issue or waiting.
+ * Inline to avoid a build-time dep on src/platform.ts.
+ */
+function printWindowsHandoff(what: string, err?: string, file?: string): void {
+  console.log();
+  console.log(`  ${c.yellow}We couldn't finish this step on your machine. Open Claude Code here${c.reset}`);
+  console.log(`  ${c.yellow}and let it patch the repo for you:${c.reset}`);
+  console.log();
+  console.log(`  ${c.bold}1.${c.reset} Install Claude Code: ${c.cyan}https://claude.ai/code${c.reset}`);
+  console.log(`  ${c.bold}2.${c.reset} Open a terminal in: ${c.cyan}${PROJECT_ROOT}${c.reset}`);
+  console.log(`  ${c.bold}3.${c.reset} Run: ${c.cyan}claude${c.reset}`);
+  console.log(`  ${c.bold}4.${c.reset} Paste this prompt:`);
+  console.log();
+  console.log(`  ${c.gray}─────────────────────────────────────────────${c.reset}`);
+  console.log(`  ${c.white}I'm running ClaudeClaw on Windows. ${what} failed.${c.reset}`);
+  if (err) console.log(`  ${c.white}The error was: ${err}${c.reset}`);
+  if (file) console.log(`  ${c.white}Start by reading ${file} and adapt it to my machine.${c.reset}`);
+  else console.log(`  ${c.white}Adapt the Windows paths in this repo to work on my machine.${c.reset}`);
+  console.log(`  ${c.white}Verify by running the failing step again.${c.reset}`);
+  console.log(`  ${c.gray}─────────────────────────────────────────────${c.reset}`);
+  console.log();
+}
+
 function expandHome(p: string): string {
   if (p.startsWith('~/') || p === '~') return path.join(os.homedir(), p.slice(1));
   return p;
@@ -57,9 +82,15 @@ async function ask(question: string, defaultVal?: string): Promise<string> {
 
 async function confirm(question: string, defaultYes = true): Promise<boolean> {
   const hint = defaultYes ? 'Y/n' : 'y/N';
-  const ans = await ask(`${question} [${hint}]`);
-  if (!ans) return defaultYes;
-  return ans.toLowerCase().startsWith('y');
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const ans = await ask(`${question} [${hint}]`);
+    if (!ans) return defaultYes;
+    const lower = ans.toLowerCase();
+    if (lower === 'y' || lower === 'yes') return true;
+    if (lower === 'n' || lower === 'no') return false;
+    console.log(`  ${c.gray}Please enter y or n.${c.reset}`);
+  }
 }
 
 function section(title: string) {
@@ -140,6 +171,14 @@ async function validateBotToken(token: string): Promise<{ valid: boolean; userna
 
 const PLATFORM = process.platform;
 
+function isWSL(): boolean {
+  if (PLATFORM !== 'linux') return false;
+  try {
+    const rel = fs.readFileSync('/proc/sys/kernel/osrelease', 'utf-8');
+    return /microsoft/i.test(rel);
+  } catch { return false; }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
 
@@ -170,6 +209,28 @@ async function main() {
   bullet('Optional WhatsApp bridge');
   console.log();
 
+  console.log(`  ${c.bold}FAQ${c.reset}`);
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Does this cost anything?`);
+  info('ClaudeClaw itself is free. You need a Claude Code subscription (Max plan)');
+  info('or an Anthropic API key. Optional features (voice, video) have their own');
+  info('free tiers. Nothing is billed without your API keys.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Does my computer need to stay on?`);
+  info('Yes. ClaudeClaw runs on your machine. When your computer sleeps or shuts');
+  info('down, the bot goes offline. Messages queue in Telegram and arrive when');
+  info('you restart.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Is it safe? Can someone else use my bot?`);
+  info('Your bot is locked to your Telegram chat ID. No one else can use it.');
+  info('Optional PIN lock adds a second layer. An emergency kill phrase lets you');
+  info('shut everything down instantly from your phone.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Can I run this on a server / VPS?`);
+  info('Yes. Set an ANTHROPIC_API_KEY instead of using claude login, and use');
+  info('the auto-start service option at the end of setup.');
+  console.log();
+
   const understood = await confirm('Ready to continue?');
   if (!understood) {
     console.log();
@@ -179,6 +240,30 @@ async function main() {
 
   // ── 3. System checks ─────────────────────────────────────────────────────
   section('System checks');
+
+  // Early Windows note. The user can still continue, but WSL2 is smoother.
+  if (PLATFORM === 'win32') {
+    warn('Native Windows detected.');
+    info('Native Windows is supported (Task Scheduler for auto-start), but WSL2');
+    info('is the smoother path: most community skills, launchd parity, and the');
+    info('Python voice stack assume a POSIX environment.');
+    console.log();
+    const continueNative = await confirm('Continue with native Windows? (say "n" to exit and switch to WSL2)', true);
+    if (!continueNative) {
+      console.log();
+      info('To switch to WSL2:');
+      info('  1. Open PowerShell as Administrator');
+      console.log(`  ${c.cyan}  wsl --install -d Ubuntu${c.reset}`);
+      info('  2. Reboot, open the Ubuntu terminal');
+      info('  3. Re-clone ClaudeClaw inside the Ubuntu filesystem (NOT /mnt/c)');
+      info('  4. Run "npm run setup" from the new clone');
+      process.exit(0);
+    }
+  }
+  if (isWSL()) {
+    ok('WSL2 detected. Treating as Linux; systemd services will be used for auto-start.');
+    console.log();
+  }
 
   // Node
   const nodeMajor = parseInt(process.version.slice(1).split('.')[0], 10);
@@ -218,12 +303,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Claude auth
-  try {
-    execSync('claude --version', { stdio: 'pipe' });
+  // Claude auth — check if user has logged in via OAuth or API key
+  const claudeDir = path.join(os.homedir(), '.claude');
+  const hasClaudeDir = fs.existsSync(claudeDir);
+  if (hasClaudeDir && fs.readdirSync(claudeDir).length > 1) {
     ok('Claude auth — logged in');
-  } catch {
-    warn('Could not verify Claude auth. If you\'re not logged in, run: claude login');
+  } else {
+    warn('Not logged in. Run: claude login');
+    info('The bot needs Claude Code auth to work. Log in before starting.');
   }
 
   // Git config (user.name and user.email)
@@ -244,8 +331,8 @@ async function main() {
     if (fixNow) {
       const name = await ask('Your name');
       const email = await ask('Your email');
-      if (name) { try { execSync(`git config --global user.name "${name}"`, { stdio: 'pipe' }); } catch { } }
-      if (email) { try { execSync(`git config --global user.email "${email}"`, { stdio: 'pipe' }); } catch { } }
+      if (name) { try { spawnSync('git', ['config', '--global', 'user.name', name], { stdio: 'pipe' }); } catch { } }
+      if (email) { try { spawnSync('git', ['config', '--global', 'user.email', email], { stdio: 'pipe' }); } catch { } }
       if (name && email) ok(`Git identity set: ${name} <${email}>`);
     }
   }
@@ -268,16 +355,17 @@ async function main() {
   // ── 4. What do you want to enable? ──────────────────────────────────────
   section('Choose your features');
 
-  info('ClaudeClaw has several optional features. Tell us what you want.');
+  info('ClaudeClaw OS has several optional features. Tell us what you want.');
   info('You can always add more later by editing .env and restarting.');
   console.log();
 
-  const wantVoiceIn = await confirm('Voice input? (send voice notes → transcribed by Groq Whisper, free)', true);
+  const wantVoiceIn = await confirm('Voice input? (send voice messages instead of typing, free)', true);
   const wantVoiceOut = wantVoiceIn
-    ? await confirm('Voice output? (Claude responds with audio via ElevenLabs — requires voice cloning)', false)
+    ? await confirm('Voice output? (the bot talks back to you in a custom voice, requires setup)', false)
     : false;
-  const wantVideo = await confirm('Video analysis? (send video clips → analyzed by Google Gemini)', false);
-  const wantWhatsApp = await confirm('WhatsApp bridge? (view and reply to WhatsApp from Telegram)', false);
+  const wantVideo = await confirm('Video analysis? (send video clips and ask questions about them)', false);
+  const wantWarRoom = await confirm('War Room? (live voice boardroom with your agent team, experimental)', false);
+  const wantWhatsApp = await confirm('WhatsApp bridge? (view and reply to WhatsApp from Telegram, highly experimental)', false);
 
   // WhatsApp explanation if they said yes
   if (wantWhatsApp) {
@@ -310,40 +398,129 @@ async function main() {
     console.log();
   }
 
-  // ── 5. Explore the ecosystem ─────────────────────────────────────────────
-  section('The Claw ecosystem');
-
-  info('ClaudeClaw is one of several "Claw" projects. You might want to');
-  info('look at others for inspiration or to use a different channel:');
-  console.log();
-  bullet(`${c.bold}NanoClaw${c.reset}  github.com/qwibitai/nanoclaw       — WhatsApp, isolated containers`);
-  bullet(`${c.bold}OpenClaw${c.reset}  github.com/openclaw/openclaw       — 10+ channels (Slack, Discord, iMessage...)`);
-  bullet(`${c.bold}TinyClaw${c.reset}  github.com/jlia0/tinyclaw          — ~400 lines shell, no Node`);
-  console.log();
-
-  const cloneInspiration = await confirm('Clone any of these repos to browse locally?', false);
-  if (cloneInspiration) {
+  // War Room explanation and Python venv setup
+  let warRoomReady = false;
+  if (wantWarRoom) {
     console.log();
-    info('Which ones? (space-separated: nanoclaw openclaw tinyclaw)');
-    const picks = await ask('Repos to clone', 'skip');
-    if (picks !== 'skip' && picks.trim()) {
-      const map: Record<string, string> = {
-        nanoclaw: 'https://github.com/qwibitai/nanoclaw.git',
-        openclaw: 'https://github.com/openclaw/openclaw.git',
-        tinyclaw: 'https://github.com/jlia0/tinyclaw.git',
-      };
-      const cloneDir = path.join(PROJECT_ROOT, '..', 'claw-inspiration');
-      fs.mkdirSync(cloneDir, { recursive: true });
-      for (const name of picks.toLowerCase().split(/\s+/)) {
-        const url = map[name];
-        if (url) {
-          const s = spinner(`Cloning ${name}...`);
-          const r = spawnSync('git', ['clone', url, path.join(cloneDir, name)], { stdio: 'pipe' });
-          r.status === 0 ? s.stop('ok', `Cloned ${name} → ${cloneDir}/${name}`) : s.stop('warn', `Could not clone ${name}`);
+    console.log(`  ${c.bold}How the War Room works:${c.reset}`);
+    console.log();
+    info('The War Room is a live voice boardroom in your browser. You speak,');
+    info('Gemini Live processes your voice in real time, and your agents respond');
+    info('with their own distinct voices. You can talk to one agent at a time');
+    info('(Direct mode) or let Gemini route your questions to the best agent');
+    info('automatically (Auto mode).');
+    console.log();
+    info('It requires Python 3.10-3.13 and a Google API key (free tier works).');
+    console.log();
+
+    // Find a compatible Python (3.10-3.13). onnxruntime doesn't ship wheels for 3.14+.
+    const PYTHON_MAX_MINOR = 13;
+    const PYTHON_MIN_MINOR = 10;
+
+    function findCompatiblePython(): { bin: string; version: string } | null {
+      // Try specific versioned binaries first (most reliable), then generic python3
+      const candidates = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
+      for (const bin of candidates) {
+        const check = spawnSync(bin, ['--version'], { stdio: 'pipe' });
+        if (check.status !== 0) continue;
+        const ver = (check.stdout?.toString().trim() || check.stderr?.toString().trim() || '');
+        const match = ver.match(/Python\s+3\.(\d+)/);
+        if (!match) continue;
+        const minor = parseInt(match[1], 10);
+        if (minor >= PYTHON_MIN_MINOR && minor <= PYTHON_MAX_MINOR) {
+          return { bin, version: ver };
         }
       }
+      return null;
     }
+
+    const pyResult = findCompatiblePython();
+    if (pyResult) {
+      ok(`${pyResult.version} (${pyResult.bin})`);
+
+      // Check if venv already exists and deps are installed
+      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      const depsInstalled = (): boolean => {
+        if (!fs.existsSync(venvPython)) return false;
+        const check = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+        return check.status === 0;
+      };
+
+      if (depsInstalled()) {
+        ok('War Room Python venv already set up.');
+        warRoomReady = true;
+      } else {
+        const needsVenv = !fs.existsSync(venvPython);
+        const setupVenv = await confirm('Set up the War Room Python environment now? (takes ~60 seconds)', true);
+        if (setupVenv) {
+          let venvOk = !needsVenv;
+          if (needsVenv) {
+            // spawnSync blocks the event loop, so use a static message instead of a spinner
+            info('Creating Python virtual environment...');
+            const venvResult = spawnSync(pyResult.bin, ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
+            if (venvResult.status === 0) {
+              ok('Virtual environment created');
+              venvOk = true;
+            } else {
+              warn('Could not create venv. You can set it up manually later:');
+              info(`  ${pyResult.bin} -m venv warroom/.venv`);
+              info('  source warroom/.venv/bin/activate');
+              info('  pip install -r warroom/requirements.txt');
+            }
+          }
+          if (venvOk) {
+            // Use stdio: 'inherit' so the user sees pip output in real time.
+            // spawnSync blocks the event loop, so a spinner would never animate.
+            console.log();
+            info('Installing War Room dependencies (this may take ~60 seconds)...');
+            console.log();
+            const pipResult = spawnSync(
+              path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'pip'),
+              ['install', '-r', path.join(PROJECT_ROOT, 'warroom', 'requirements.txt')],
+              { stdio: 'inherit', timeout: 300000 },
+            );
+            if (pipResult.status === 0) {
+              ok('War Room dependencies installed');
+              warRoomReady = true;
+            } else {
+              warn('pip install failed. War Room will be disabled until deps are installed.');
+              console.log();
+              info('To fix, run these commands and then re-run npm run setup:');
+              console.log();
+              console.log(`  ${c.cyan}cd ${PROJECT_ROOT}${c.reset}`);
+              console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
+              console.log(`  ${c.cyan}pip install -r warroom/requirements.txt${c.reset}`);
+            }
+          }
+        }
+      }
+    } else {
+      // Check if they have Python but it's too new
+      const anyPy = spawnSync('python3', ['--version'], { stdio: 'pipe' });
+      if (anyPy.status === 0) {
+        const ver = anyPy.stdout?.toString().trim() || anyPy.stderr?.toString().trim() || '';
+        warn(`${ver} found, but War Room requires Python 3.10-3.13.`);
+        info('onnxruntime (used for voice activity detection) doesn\'t support 3.14+ yet.');
+        info('Install a compatible version:');
+        bullet('Mac: brew install python@3.13');
+        bullet('Linux: sudo apt install python3.13 python3.13-venv');
+      } else {
+        warn('Python 3 not found. You need Python 3.10-3.13 for the War Room.');
+        info('Install Python:');
+        bullet('Mac: brew install python@3.13');
+        bullet('Linux: sudo apt install python3.13 python3.13-venv');
+      }
+      info('Then re-run npm run setup to enable the War Room.');
+    }
+
+    if (!warRoomReady) {
+      console.log();
+      warn('War Room will be disabled in .env. Re-run npm run setup after fixing the Python environment.');
+    }
+    console.log();
   }
+
+  // Ecosystem section removed — users can find alternatives in README "Other Channels".
 
   // ── 6. Config directory (CLAUDECLAW_CONFIG) ──────────────────────────────
   section('Config directory (CLAUDECLAW_CONFIG)');
@@ -360,21 +537,21 @@ async function main() {
   console.log();
 
   let claudeclawConfigDir = defaultConfigDir;
-  const changeConfigDir = await confirm('Change this path?', false);
-  if (changeConfigDir) {
-    const input = await ask('Config directory', '~/.claudeclaw');
-    claudeclawConfigDir = expandHome(input.trim() || '~/.claudeclaw');
+  const configInput = await ask('Config directory (Enter to keep default)', defaultConfigDir);
+  const trimmedConfig = configInput.trim();
+  if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
+    // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
+    if (trimmedConfig.length < 3 || (!trimmedConfig.startsWith('/') && !trimmedConfig.startsWith('~') && !trimmedConfig.startsWith('.'))) {
+      warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
+    } else {
+      claudeclawConfigDir = expandHome(trimmedConfig);
+    }
   }
 
-  // If the chosen directory already exists, notify and let user decide
+  // If the chosen directory already exists, just confirm
   if (fs.existsSync(claudeclawConfigDir)) {
     const hasClaudeMd = fs.existsSync(path.join(claudeclawConfigDir, 'CLAUDE.md'));
-    ok(`Directory already exists${hasClaudeMd ? ' — CLAUDE.md found' : ' — no CLAUDE.md yet'}`);
-    const useExisting = await confirm('Use this directory as-is?', true);
-    if (!useExisting) {
-      const newPath = await ask('Enter a different path');
-      if (newPath.trim()) claudeclawConfigDir = expandHome(newPath.trim());
-    }
+    ok(`Using ${claudeclawConfigDir}${hasClaudeMd ? ' (CLAUDE.md found)' : ''}`);
   }
 
   // Create the directory if needed
@@ -411,16 +588,14 @@ async function main() {
   info('The more context you add, the better it performs without explaining things');
   info('in every message. Think of it as a system prompt that persists everywhere.');
   console.log();
-
-  const openClaude = await confirm('Open CLAUDE.md now to edit it?', true);
-  if (openClaude) {
-    const editor = process.env.EDITOR || (PLATFORM === 'win32' ? 'notepad' : 'nano');
-    try {
-      spawnSync(editor, [claudeMdDest], { stdio: 'inherit' });
-    } catch {
-      warn(`Could not open ${editor}. Edit manually: ${claudeMdDest}`);
-    }
-  }
+  console.log(`  ${c.bold}Your CLAUDE.md is here:${c.reset}`);
+  console.log();
+  console.log(`  ${c.cyan}${claudeMdDest}${c.reset}`);
+  console.log();
+  info('You can edit it in any text editor, or just start the bot and ask');
+  info('Claude to update your CLAUDE.md for you. It has full access to the file.');
+  console.log();
+  info('The bot works fine with the defaults. Personalize it whenever you\'re ready.');
 
   // ── 7. Skills to install ─────────────────────────────────────────────────
   section('Skills you might want');
@@ -505,19 +680,44 @@ async function main() {
     ok(`Chat ID: ${env.ALLOWED_CHAT_ID}`);
   } else {
     info('Your chat ID locks the bot so only YOU can talk to it.');
-    info('To get it, you need to have a quick conversation with your bot:');
+    info('We\'ll detect it automatically. Just message your bot on Telegram:');
     console.log();
     bullet('Open Telegram on your phone or desktop');
     bullet(`Search for your bot: @${botUsername || 'your_bot_username'}`);
     bullet('Tap Start or send any message to it');
-    bullet('The bot will reply with your chat ID (a number like 123456789)');
-    bullet('Copy that number and paste it below');
     console.log();
-    info('Don\'t have it yet? Press Enter to skip. The bot will show your');
-    info('chat ID the first time you message it. Add it to .env and restart.');
-    console.log();
-    const chatId = await ask('Your Telegram chat ID (or Enter to skip)', 'skip');
-    if (chatId !== 'skip' && chatId) env.ALLOWED_CHAT_ID = chatId;
+
+    const wantAuto = await confirm('Ready? Send a message to your bot, then press Y');
+
+    if (wantAuto) {
+      const s = spinner('Waiting for your message...');
+      let detected = '';
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await sleep(2000);
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=5&timeout=0`);
+          const data = (await res.json()) as { ok: boolean; result?: Array<{ message?: { chat?: { id?: number } } }> };
+          if (data.ok && data.result?.length) {
+            const chatId = data.result[data.result.length - 1]?.message?.chat?.id;
+            if (chatId) {
+              detected = String(chatId);
+              break;
+            }
+          }
+        } catch { /* retry */ }
+      }
+
+      if (detected) {
+        s.stop('ok', `Detected chat ID: ${detected}`);
+        env.ALLOWED_CHAT_ID = detected;
+      } else {
+        s.stop('warn', 'No message detected. You can add ALLOWED_CHAT_ID to .env later.');
+        info('The bot will show your chat ID the first time you message it.');
+      }
+    } else {
+      info('No problem. The bot will show your chat ID the first time you');
+      info('message it. Add it to .env and restart.');
+    }
   }
 
   // ── 9. Security ──────────────────────────────────────────────────────────
@@ -542,27 +742,29 @@ async function main() {
   if (env.SECURITY_PIN_HASH) {
     ok('PIN lock already configured');
   } else {
-    const wantPin = await confirm('Set up a PIN lock?');
-    if (wantPin) {
-      let pinSet = false;
-      while (!pinSet) {
-        const pin = await ask('Choose a PIN (4+ characters)');
-        if (!pin || pin.length < 4) {
-          console.log(`  ${c.red}PIN must be at least 4 characters.${c.reset}`);
-          continue;
-        }
-        const pinConfirm = await ask('Confirm PIN');
-        if (pin !== pinConfirm) {
-          console.log(`  ${c.red}PINs don't match. Try again.${c.reset}`);
-          continue;
-        }
-        // Salted hash: "salt:hash"
-        const salt = crypto.randomBytes(16).toString('hex');
-        const hash = crypto.createHash('sha256').update(salt + pin).digest('hex');
-        env.SECURITY_PIN_HASH = `${salt}:${hash}`;
-        ok('PIN set. Bot will start locked, send the PIN to unlock.');
-        pinSet = true;
+    let pinSet = false;
+    // Single prompt: type a PIN to enable, or Enter to skip
+    while (!pinSet) {
+      const pin = await ask('Choose a PIN (4+ characters, or Enter to skip)');
+      if (!pin) {
+        info('No PIN set. Add SECURITY_PIN_HASH to .env later if you change your mind.');
+        break;
       }
+      if (pin.length < 4) {
+        console.log(`  ${c.red}PIN must be at least 4 characters.${c.reset}`);
+        continue;
+      }
+      const pinConfirm = await ask('Confirm PIN');
+      if (pin !== pinConfirm) {
+        console.log(`  ${c.red}PINs don't match. Try again.${c.reset}`);
+        continue;
+      }
+      // Salted hash: "salt:hash"
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = crypto.createHash('sha256').update(salt + pin).digest('hex');
+      env.SECURITY_PIN_HASH = `${salt}:${hash}`;
+      ok('PIN set. Bot will start locked, send the PIN to unlock.');
+      pinSet = true;
 
       // Idle timeout (only ask when PIN is set)
       console.log();
@@ -573,8 +775,6 @@ async function main() {
         env.IDLE_LOCK_MINUTES = String(idleVal);
         ok(`Auto-lock after ${idleVal}m of inactivity`);
       }
-    } else {
-      info('Skipped. Add SECURITY_PIN_HASH to .env later if you change your mind.');
     }
   }
 
@@ -632,16 +832,20 @@ async function main() {
     }
   }
 
-  // ── 10. Video / Gemini ────────────────────────────────────────────────────
-  if (wantVideo) {
-    section('Video analysis — Google Gemini');
+  // ── 10. Google API key (video analysis + War Room + memory consolidation) ──
+  if (wantVideo || wantWarRoom) {
+    section('Google API key');
+
+    const reasons: string[] = [];
+    if (wantVideo) reasons.push('video analysis');
+    if (wantWarRoom) reasons.push('War Room voice');
+    info(`Needed for: ${reasons.join(' and ')}. Also powers memory consolidation.`);
+    console.log();
 
     if (env.GOOGLE_API_KEY) {
       ok('Google API key already configured');
     } else {
-      info('Get a free Google API key at: aistudio.google.com → Get API key');
-      info('Then install the gemini-api-dev skill from:');
-      info('github.com/google-gemini/gemini-skills');
+      info('Get a free key at: aistudio.google.com → Get API key');
       console.log();
       const key = await ask('Google API key (Enter to skip)');
       if (key) env.GOOGLE_API_KEY = key;
@@ -692,6 +896,10 @@ async function main() {
     '# ── Integrations ──────────────────────────────────────────────',
     `GOOGLE_API_KEY=${env.GOOGLE_API_KEY || ''}`,
     '',
+    '# ── Features ──────────────────────────────────────────────────',
+    (wantWarRoom && warRoomReady) ? 'WARROOM_ENABLED=true' : '# WARROOM_ENABLED=false',
+    wantWhatsApp ? 'WHATSAPP_ENABLED=true' : '# WHATSAPP_ENABLED=false',
+    '',
     '# ── Dashboard ─────────────────────────────────────────────────',
     `DASHBOARD_TOKEN=${env.DASHBOARD_TOKEN || ''}`,
     `DASHBOARD_PORT=${env.DASHBOARD_PORT || '3141'}`,
@@ -708,7 +916,7 @@ async function main() {
   ];
 
   // Preserve unknown keys
-  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
+  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','WARROOM_ENABLED','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
   for (const [k, v] of Object.entries(env)) {
     if (!known.has(k) && v) lines.push(`${k}=${v}`);
   }
@@ -723,9 +931,12 @@ async function main() {
   if (PLATFORM === 'darwin') {
     await setupMacOS();
   } else if (PLATFORM === 'linux') {
+    if (isWSL()) {
+      ok('WSL2 detected. Using systemd user services (keep the Ubuntu terminal open or enable WSL2 systemd).');
+    }
     await setupLinux();
   } else if (PLATFORM === 'win32') {
-    setupWindows();
+    await setupWindows();
   } else {
     section('Auto-start');
     info('Unknown platform. Start manually: npm start');
@@ -773,31 +984,178 @@ async function main() {
 
   const wantAgents = await confirm('Set up specialist agents?', false);
   if (wantAgents) {
+    const templates: { id: string; label: string; desc: string }[] = [
+      { id: 'comms', label: 'comms', desc: 'email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn' },
+      { id: 'content', label: 'content', desc: 'YouTube scripts, LinkedIn posts, trend research' },
+      { id: 'ops', label: 'ops', desc: 'calendar, billing, Stripe, Gumroad, admin' },
+      { id: 'research', label: 'research', desc: 'deep web research, academic, competitive intel' },
+    ];
+
     console.log();
-    info('Available templates:');
-    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn`);
-    console.log(`  2. ${c.bold}content${c.reset}   — YouTube scripts, LinkedIn posts, trend research`);
-    console.log(`  3. ${c.bold}ops${c.reset}       — calendar, billing, Stripe, Gumroad, admin`);
-    console.log(`  4. ${c.bold}research${c.reset}  — deep web research, academic, competitive intel`);
+    info('You can use the built-in templates or create custom agents.');
+    info('Each agent needs its own Telegram bot from @BotFather.');
+    info('Type "done" at any time to finish and move on.');
     console.log();
-    info('For each agent, you\'ll need to create a Telegram bot via @BotFather.');
-    info('Open Telegram → @BotFather → /newbot → choose a name and username.');
+
+    console.log(`  ${c.bold}Available templates:${c.reset}`);
+    for (const t of templates) {
+      console.log(`  ${c.cyan}${t.label}${c.reset} ${c.gray}— ${t.desc}${c.reset}`);
+    }
+    console.log(`  ${c.cyan}custom${c.reset} ${c.gray}— create your own with a custom name${c.reset}`);
     console.log();
-    info('Run the agent creation wizard after setup finishes:');
+
+    const createdAgents: string[] = [];
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const input = await ask('Add an agent (template name, "custom", or "done")');
+      if (!input || input.toLowerCase() === 'done') break;
+
+      let agentId: string;
+      let templateId: string;
+
+      if (input.toLowerCase() === 'custom') {
+        const customId = await ask('Agent ID (lowercase, no spaces, e.g. "finance")');
+        if (!customId || customId.toLowerCase() === 'done') break;
+        agentId = customId.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        if (!agentId || agentId.length < 2) {
+          warn('ID must be at least 2 lowercase characters. Try again.');
+          continue;
+        }
+        templateId = '_template';
+      } else {
+        const match = templates.find((t) => t.id === input.toLowerCase());
+        if (!match) {
+          warn(`Unknown template "${input}". Use one of: ${templates.map((t) => t.label).join(', ')}, custom, or done.`);
+          continue;
+        }
+        agentId = match.id;
+        templateId = match.id;
+      }
+
+      if (createdAgents.includes(agentId)) {
+        warn(`"${agentId}" already added. Try a different one.`);
+        continue;
+      }
+
+      console.log();
+      info(`Create a Telegram bot for ${agentId}:`);
+      console.log(`    1. Open Telegram, message ${c.bold}@BotFather${c.reset}`);
+      console.log(`    2. Send ${c.bold}/newbot${c.reset}`);
+      console.log(`    3. Name it whatever you like (e.g. "My ${agentId.charAt(0).toUpperCase() + agentId.slice(1)} Agent")`);
+      console.log(`    4. Copy the token BotFather gives you`);
+      console.log();
+
+      const envKey = `${agentId.toUpperCase()}_BOT_TOKEN`;
+      const existingToken = env[envKey];
+      let token = '';
+
+      if (existingToken) {
+        ok(`${envKey} already set in .env`);
+        const reuse = await confirm('Keep the existing token?', true);
+        if (reuse) token = existingToken;
+      }
+
+      if (!token) {
+        token = await ask(`Paste the bot token (Enter to skip)`);
+      }
+
+      if (!token) {
+        info(`Skipped. You can add it later with: npm run agent:create`);
+        console.log();
+        continue;
+      }
+
+      // Check for duplicate token (same as main bot or another agent)
+      if (token === env.TELEGRAM_BOT_TOKEN) {
+        warn('This is the same token as your main bot. Each agent needs its own bot.');
+        info('Create a new bot from @BotFather and try again.');
+        console.log();
+        continue;
+      }
+      const dupeAgent = createdAgents.find((id) => env[`${id.toUpperCase()}_BOT_TOKEN`] === token);
+      if (dupeAgent) {
+        warn(`This token is already used by agent "${dupeAgent}". Each agent needs its own bot.`);
+        console.log();
+        continue;
+      }
+
+      // Validate token
+      try {
+        const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+        const data = await resp.json() as { ok: boolean; result?: { username?: string } };
+        if (data.ok) {
+          ok(`Bot verified: @${data.result?.username}`);
+        } else {
+          warn('Token did not validate. Saving anyway (you can fix it in .env later).');
+        }
+      } catch {
+        warn('Could not verify token (no internet?). Saving anyway.');
+      }
+
+      // Save token to env
+      env[envKey] = token;
+
+      // Create agent config directory
+      const configDir = env.CLAUDECLAW_CONFIG || path.join(os.homedir(), '.claudeclaw');
+      const agentDir = path.join(configDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+
+      // Copy template CLAUDE.md
+      const templateClaudeMd = path.join(PROJECT_ROOT, 'agents', templateId, 'CLAUDE.md');
+      const destClaudeMd = path.join(agentDir, 'CLAUDE.md');
+      if (fs.existsSync(templateClaudeMd) && !fs.existsSync(destClaudeMd)) {
+        fs.copyFileSync(templateClaudeMd, destClaudeMd);
+      }
+
+      // Create agent.yaml from example
+      const exampleYaml = path.join(PROJECT_ROOT, 'agents', templateId, 'agent.yaml.example');
+      const destYaml = path.join(agentDir, 'agent.yaml');
+      if (fs.existsSync(exampleYaml)) {
+        let yamlContent = fs.readFileSync(exampleYaml, 'utf-8');
+        yamlContent = yamlContent.replace(/telegram_bot_token_env:.*/, `telegram_bot_token_env: ${envKey}`);
+        if (templateId === '_template') {
+          yamlContent = yamlContent.replace(/name:.*/, `name: ${agentId.charAt(0).toUpperCase() + agentId.slice(1)}`);
+        }
+        fs.writeFileSync(destYaml, yamlContent, 'utf-8');
+      }
+
+      ok(`Agent "${agentId}" configured at ${agentDir}`);
+      createdAgents.push(agentId);
+      console.log();
+    }
+
+    if (createdAgents.length > 0) {
+      console.log();
+      ok(`${createdAgents.length} agent(s) configured: ${createdAgents.join(', ')}`);
+      console.log();
+      info('After setup finishes, start each agent in its own terminal:');
+      console.log();
+      for (const id of createdAgents) {
+        console.log(`  ${c.cyan}npm start -- --agent ${id}${c.reset}`);
+      }
+      console.log();
+      info('Or install as background services:');
+      for (const id of createdAgents) {
+        console.log(`  ${c.cyan}bash scripts/agent-service.sh install ${id}${c.reset}`);
+      }
+    } else {
+      info('No agents created. You can add them later with:');
+      console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
+    }
+
+    // Re-write .env with agent tokens appended
+    if (createdAgents.length > 0) {
+      let envContent = fs.readFileSync(envPath, 'utf-8');
+      for (const id of createdAgents) {
+        const key = `${id.toUpperCase()}_BOT_TOKEN`;
+        if (env[key] && !envContent.includes(`${key}=`)) {
+          envContent += `\n# Agent: ${id}\n${key}=${env[key]}\n`;
+        }
+      }
+      fs.writeFileSync(envPath, envContent, 'utf-8');
+    }
     console.log();
-    console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
-    console.log();
-    info('It walks you through template selection, bot creation, and configuration.');
-    info('Then start each agent in its own terminal:');
-    console.log();
-    console.log(`  ${c.cyan}npm start -- --agent comms${c.reset}      # Terminal 2`);
-    console.log(`  ${c.cyan}npm start -- --agent content${c.reset}    # Terminal 3`);
-    console.log(`  ${c.cyan}npm start -- --agent ops${c.reset}        # Terminal 4`);
-    console.log();
-    info('Or install as background services:');
-    console.log(`  ${c.cyan}bash scripts/agent-service.sh install comms${c.reset}`);
-    console.log();
-    info('Full guide: see "Creating a team of agents" in the README.');
   }
 
   // ── 16. Summary ───────────────────────────────────────────────────────────
@@ -813,7 +1171,38 @@ async function main() {
   wantVoiceIn && env.GROQ_API_KEY ? ok('Voice input: Groq Whisper ✓') : wantVoiceIn ? warn('Voice input: GROQ_API_KEY not set') : info('Voice input: not enabled');
   wantVoiceOut && env.ELEVENLABS_API_KEY ? ok('Voice output: ElevenLabs ✓') : wantVoiceOut ? warn('Voice output: ElevenLabs keys not set') : info('Voice output: not enabled');
   wantVideo && env.GOOGLE_API_KEY ? ok('Video analysis: Gemini ✓') : wantVideo ? warn('Video analysis: GOOGLE_API_KEY not set') : info('Video analysis: not enabled');
+  (wantWarRoom && warRoomReady && env.GOOGLE_API_KEY) ? ok('War Room: enabled ✓') : wantWarRoom && !warRoomReady ? warn('War Room: Python deps not installed (disabled)') : wantWarRoom ? warn('War Room: GOOGLE_API_KEY not set') : info('War Room: not enabled');
   wantWhatsApp ? ok('WhatsApp: run npx tsx scripts/wa-daemon.ts to connect') : info('WhatsApp: not enabled');
+
+  console.log();
+  info('Edit CLAUDE.md any time to change personality, add context, or update skills.');
+  info('Re-run npm run setup to change API keys or service settings.');
+  console.log();
+
+  // Offer to start the bot right now
+  const startNow = await confirm('Start the bot now?');
+  if (startNow) {
+    console.log();
+    // Rebuild to ensure dist/ matches current source
+    info('Building...');
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'pipe' });
+    if (buildResult.status !== 0) {
+      warn('Build failed. Run npm run build to see errors, then npm start.');
+    } else {
+      ok('Build complete');
+      console.log();
+      info('Starting ClaudeClaw... (press Ctrl+C to stop)');
+      console.log();
+      // Close readline before handing off to the bot process
+      rl.close();
+      try {
+        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
+      } catch {
+        // User hit Ctrl+C or process exited
+      }
+      return;
+    }
+  }
 
   console.log();
   console.log(`  ${c.bold}Start the bot:${c.reset}`);
@@ -829,9 +1218,6 @@ async function main() {
   } else if (PLATFORM === 'linux') {
     info('Logs: journalctl --user -u claudeclaw -f');
   }
-  console.log();
-  info('Edit CLAUDE.md any time to change personality, add context, or update skills.');
-  info('Re-run npm run setup to change API keys or service settings.');
   console.log();
 }
 
@@ -935,20 +1321,79 @@ WantedBy=default.target
 }
 
 // ── Platform: Windows ────────────────────────────────────────────────────────
-function setupWindows() {
+async function setupWindows() {
   section('Auto-start (Windows)');
 
-  warn('Windows detected.');
+  warn('Windows detected. WSL2 is the smoother path, but native works too.');
   console.log();
-  info('Option A — WSL2 (recommended):');
-  info('  Install WSL2, clone ClaudeClaw inside the WSL2 filesystem,');
-  info('  and re-run setup. Keep ~/.claude/ inside WSL2, not the Windows mount.');
+  info('A: WSL2 (recommended if you haven\'t started yet).');
+  info('  Run "wsl --install -d Ubuntu" in an elevated PowerShell, reboot,');
+  info('  clone ClaudeClaw inside the Ubuntu filesystem (not /mnt/c), and');
+  info('  re-run this setup from inside WSL2. Keep ~/.claude/ inside WSL2.');
   console.log();
-  info('Option B — PM2 (native Windows):');
-  console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
-  console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
-  console.log(`  ${c.cyan}pm2 save${c.reset}`);
-  console.log(`  ${c.cyan}pm2 startup${c.reset}  ${c.gray}# follow the instructions it prints${c.reset}`);
+  info('B: Native Windows (Task Scheduler).');
+  info('  Registers a per-user scheduled task that runs at logon.');
+  info('  No admin rights needed. Logs go to logs\\main.log.');
+  console.log();
+
+  const installNative = await confirm('Install the native Windows auto-start task now?', false);
+  if (!installNative) {
+    info('Skipped. You can start the bot manually with: npm start');
+    info('Or re-run "npm run setup" later to install the service.');
+    return;
+  }
+
+  const s = spinner('Registering Windows scheduled task...');
+  try {
+    const winDir = path.join(PROJECT_ROOT, 'win');
+    fs.mkdirSync(winDir, { recursive: true });
+
+    const label = 'com.claudeclaw.main';
+    const batPath = path.join(winDir, `${label}.bat`);
+    const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
+    const logsDir = path.join(PROJECT_ROOT, 'logs');
+    const logFile = path.join(logsDir, 'main.log');
+
+    const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const bat = `@echo off\r
+REM ClaudeClaw main bot wrapper\r
+set NODE_ENV=production\r
+cd /d ${q(PROJECT_ROOT)}\r
+if not exist ${q(logsDir)} mkdir ${q(logsDir)}\r
+${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
+`;
+    fs.writeFileSync(batPath, bat, 'utf-8');
+
+    // Delete any prior registration idempotently
+    try { execSync(`schtasks /Delete /TN "${label}" /F`, { stdio: 'ignore' }); } catch { /* not registered */ }
+
+    // Register the task (runs on logon, interactive user context)
+    execSync(
+      `schtasks /Create /SC ONLOGON /TN "${label}" /TR "\\"${batPath}\\"" /F /IT`,
+      { stdio: 'pipe' },
+    );
+    // Kick it off now so the bot comes online without a reboot.
+    execSync(`schtasks /Run /TN "${label}"`, { stdio: 'pipe' });
+    s.stop('ok', `Scheduled task installed: ${label}`);
+
+    console.log();
+    info(`Manage it from:`);
+    console.log(`  ${c.cyan}schtasks /Query /TN "${label}"${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /End /TN "${label}"${c.reset}     ${c.gray}# stop${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /Run /TN "${label}"${c.reset}     ${c.gray}# start${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /Delete /TN "${label}" /F${c.reset}  ${c.gray}# uninstall${c.reset}`);
+    console.log();
+    info(`Logs: ${logFile}`);
+  } catch (err) {
+    s.stop('warn', 'Could not register scheduled task automatically');
+    const errMsg = err instanceof Error ? err.message : String(err);
+    printWindowsHandoff('Installing the ClaudeClaw auto-start scheduled task', errMsg, 'scripts/setup.ts (setupWindows function)');
+    info('Quick manual fallback if you prefer: start with "npm start" in a terminal,');
+    info('or use PM2:');
+    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
+    console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
+    console.log(`  ${c.cyan}pm2 save && pm2 startup${c.reset}`);
+  }
 }
 
 main()

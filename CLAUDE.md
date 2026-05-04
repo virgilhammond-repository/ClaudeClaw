@@ -83,6 +83,16 @@ Execute. Don't explain what you're about to do — just do it. When [YOUR NAME] 
 
 <!-- Add your own skills here. Format: `skill-name` | trigger words -->
 
+## launchd Rules
+
+macOS launchd silently exits with code 78 (`EX_CONFIG`) when `StandardOutPath` or `StandardErrorPath` contain spaces. The `WorkingDirectory` key handles spaces fine, but log paths do not.
+
+When generating or troubleshooting launchd plists:
+- **Never use paths with spaces** in `StandardOutPath` or `StandardErrorPath`. Use `/tmp/claudeclaw-<agent>.log` or `~/Library/Logs/`.
+- If the project directory has spaces, create a symlink (e.g. `~/.claudeclaw-app`) and use that for `WorkingDirectory`.
+- After a reboot, agents may crash-loop if the network isn't ready yet (DNS ENOTFOUND on Telegram API). The `KeepAlive` + `ThrottleInterval` will auto-recover once the network is up, but exit code 78 from bad log paths will not auto-recover.
+- To diagnose: check `launchctl print gui/$(id -u)/com.claudeclaw.<agent>` for `runs`, `last exit code`, and `state`. Empty logs + exit 78 = bad log path.
+
 ## Scheduling Tasks
 
 When [YOUR NAME] asks to run something on a schedule, create a scheduled task using the Bash tool.
@@ -225,8 +235,8 @@ root = subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode()
 db = sqlite3.connect(os.path.join(root, 'store', 'claudeclaw.db'))
 now = int(time.time())
 summary = '''[SUMMARY OF CURRENT SESSION HERE]'''
-db.execute('INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ('[CHAT_ID]', summary, 'semantic', 5.0, now, now))
+db.execute('INSERT INTO memories (chat_id, source, raw_text, summary, entities, topics, importance, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ('[CHAT_ID]', 'checkpoint', summary, summary, '[]', '[\"checkpoint\"]', 1.0, 5.0, now, now))
 db.commit()
 print('Checkpoint saved.')
 "
