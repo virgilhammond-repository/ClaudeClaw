@@ -302,7 +302,7 @@ describe('runAcpAgent', () => {
     expect(result.thinkingOptions).toContainEqual(expect.objectContaining({ id: 'xhigh', label: 'Extra high' }));
   });
 
-  it('does not expose access modes as speed options and forces full access', async () => {
+  it('does not expose access modes as speed options and forces full access when opted in', async () => {
     const script = writeFakeAcpAgent('access');
     const inspected = await inspectAcpProviderRuntimeOptions(
       { type: 'acp', command: process.execPath, args: [script] },
@@ -313,11 +313,46 @@ describe('runAcpAgent', () => {
     expect(inspected.thinkingOptions).toContainEqual(expect.objectContaining({ id: 'xhigh' }));
 
     const result = await runAcpAgent(
-      { type: 'acp', command: process.execPath, args: [script] },
+      { type: 'acp', command: process.execPath, args: [script], dangerouslySkipPermissions: true },
       'hi',
       undefined,
     );
     expect(result.text).toBe('full-access');
+  });
+
+  it('does not force full-access mode when provider has not opted in', async () => {
+    const script = writeFakeAcpAgent('access');
+    const result = await runAcpAgent(
+      { type: 'acp', command: process.execPath, args: [script] },
+      'hi',
+      undefined,
+    );
+    expect(result.text).toBe('no-mode');
+  });
+
+  it('forwards toolPolicy allowedTools/disallowedTools to the ACP engine', async () => {
+    const script = writeFakeAcpAgent('permission');
+    const reject = await runAcpAgent(
+      { type: 'acp', command: process.execPath, args: [script] },
+      'hi',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { allowedTools: [], disallowedTools: ['*'] },
+    );
+    expect(reject.text).toBe('reject');
+
+    const allow = await runAcpAgent(
+      { type: 'acp', command: process.execPath, args: [script] },
+      'hi',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { allowedTools: ['Bash'], disallowedTools: ['*'] },
+    );
+    expect(allow.text).toBe('allow');
   });
 
   it('passes MCP servers to ACP sessions', async () => {

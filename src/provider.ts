@@ -20,6 +20,15 @@ export interface ProviderConfig {
   /** Generic ACP command. Built-in ACP presets supply their own commands. */
   command?: string;
   args?: string[];
+  /**
+   * Opt-in flag to skip permission prompts and let the provider auto-execute tools.
+   * When unset, defaults asymmetrically: Claude keeps its existing permissive
+   * behavior (it has months of demonstrated good judgment on Telegram chat
+   * conversational vs. coding intent), while ACP providers (codex/gemini/opencode)
+   * default to false so a casual Telegram message can't trigger a coding session.
+   * Resolve via effectiveSkipPermissions() rather than reading this directly.
+   */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export const DEFAULT_PROVIDER: ProviderConfig = { type: 'claude', model: 'claude-opus-4-6' };
@@ -37,6 +46,7 @@ export function normalizeProviderConfig(input: unknown, legacyModel?: string): P
     if (typeof raw.thinkingMode === 'string' && raw.thinkingMode.trim()) cfg.thinkingMode = raw.thinkingMode.trim();
     if (typeof raw.command === 'string' && raw.command.trim()) cfg.command = raw.command.trim();
     if (Array.isArray(raw.args)) cfg.args = raw.args.filter((v): v is string => typeof v === 'string');
+    if (typeof raw.dangerouslySkipPermissions === 'boolean') cfg.dangerouslySkipPermissions = raw.dangerouslySkipPermissions;
     return cfg;
   }
 
@@ -56,7 +66,20 @@ export function providerToYaml(provider: ProviderConfig): Record<string, unknown
     if (provider.command) raw.command = provider.command;
     if (provider.args) raw.args = provider.args;
   }
+  if (provider.dangerouslySkipPermissions === true) raw.dangerouslySkipPermissions = true;
   return raw;
+}
+
+/**
+ * Asymmetric default: Claude keeps full tool access (load-bearing for
+ * notify.sh, scheduling, mission tasks, memory queries, Obsidian, file
+ * sending). ACP providers (codex/gemini/opencode) start locked down because
+ * they have no track record on the conversational Telegram path and have
+ * demonstrated a tendency to interpret casual prompts as coding tasks.
+ * Set provider.dangerouslySkipPermissions explicitly to override.
+ */
+export function effectiveSkipPermissions(provider: ProviderConfig): boolean {
+  return provider.dangerouslySkipPermissions ?? provider.type === 'claude';
 }
 
 function mainConfigPath(): string {

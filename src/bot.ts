@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
-import { runAgent, runAgentWithRetry, UsageInfo, AgentProgressEvent } from './agent.js';
+import { runAgent, runAgentWithRetry, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { AgentError } from './errors.js';
 import {
   AGENT_ID,
@@ -55,6 +55,21 @@ import {
   getSecurityStatus,
   audit,
 } from './security.js';
+
+// ── ACP tool policy for conversational chat turns ────────────────────
+// Telegram and dashboard chat are conversational by default. Claude has
+// months of demonstrated good judgment about when to run tools mid-chat,
+// so it keeps full access. ACP providers (codex/gemini/opencode) are new
+// to this path and have shown they'll happily interpret a casual message
+// as a coding task — codex once ran the full test suite on "hey, wake up,
+// time to solve the puzzle." Lock them to read-only by default; lift via
+// explicit per-turn escalation in a follow-up.
+const CHAT_ACP_TOOL_POLICY: AgentToolPolicy = { allowedTools: ['Read', 'Grep', 'Glob'] };
+
+function chatToolPolicyFor(provider: ProviderConfig | undefined): AgentToolPolicy | undefined {
+  if (!provider || provider.type === 'claude') return undefined;
+  return CHAT_ACP_TOOL_POLICY;
+}
 
 // ── Streaming rate limiter ───────────────────────────────────────────
 const globalStreamLastEdit = new Map<string, number>();
@@ -574,7 +589,11 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         void ctx.reply(`🔄 ${event.description}`).catch(() => {});
       } else if (event.type === 'task_completed') {
         emitChatEvent(progressPayload);
-        void ctx.reply(`✓ ${event.description}`).catch(() => {});
+        // Only notify Telegram for meaningful completions (sub-agent results),
+        // not generic "Tool result" from every individual tool call.
+        if (event.description !== 'Tool result') {
+          void ctx.reply(`✓ ${event.description}`).catch(() => {});
+        }
       } else if (event.type === 'plan') {
         emitChatEvent(progressPayload);
       } else if (event.type === 'tool_active') {
@@ -645,6 +664,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       MODEL_FALLBACK_CHAIN.length > 0 ? MODEL_FALLBACK_CHAIN : undefined,
       agentMcpAllowlist,
       provider,
+      chatToolPolicyFor(provider),
     );
 
     clearTimeout(timeoutId);
@@ -1720,6 +1740,7 @@ async function processDashboardMessage(
       abortCtrl.abort();
     }, AGENT_TIMEOUT_MS);
 
+    const dashProvider = activeProvider();
     const result = await runAgent(
       fullMessage,
       sessionId,
@@ -1729,7 +1750,8 @@ async function processDashboardMessage(
       abortCtrl,
       undefined, // no streaming for dashboard
       agentMcpAllowlist,
-      activeProvider(),
+      dashProvider,
+      chatToolPolicyFor(dashProvider),
     );
 
     clearTimeout(dashTimeout);

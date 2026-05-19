@@ -261,6 +261,19 @@ function ensureAgentsMdSymlink(dir: string): boolean {
 type SetupProviderType = Extract<ProviderType, 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp'>;
 
 async function configureProvider(): Promise<SetupProviderType> {
+  // Setup configures Claude. See the DISCLAIMER in README.md for ENABLE_ACP
+  // and non-Claude provider details. The original multi-provider picker is
+  // preserved in the commented block below — to re-enable it, remove the
+  // early-return and uncomment the original implementation.
+  section('Provider');
+  info('Setup configures Claude as the agent provider.');
+  info('See the DISCLAIMER in README.md for ENABLE_ACP and non-Claude providers.');
+  setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-6' });
+  ok('Provider set to Claude');
+  return 'claude';
+
+  /* ── ORIGINAL MULTI-PROVIDER PICKER (re-enable by removing the early
+   *    return above and uncommenting this block) ───────────────────────
   section('Provider');
   info('Choose the agent backend ClaudeClaw should use for the main bot.');
   info('Claude is the default. Non-Claude providers are BETA and gated by ENABLE_ACP=true');
@@ -371,6 +384,7 @@ async function configureProvider(): Promise<SetupProviderType> {
   setMainProviderConfig({ type: 'opencode' });
   ok('Provider set to OpenCode');
   return 'opencode';
+  */
 }
 
 function splitArgs(input: string): string[] {
@@ -402,13 +416,15 @@ async function main() {
   // ── 2. What is ClaudeClaw ────────────────────────────────────────────────
   section('What is ClaudeClaw?');
 
-  console.log(`  ClaudeClaw bridges a local agent provider to Telegram.`);
-  console.log(`  You message your bot from your phone. ClaudeClaw runs`);
-  console.log(`  ${c.bold}OpenCode${c.reset}, ${c.bold}Gemini CLI${c.reset}, another ${c.bold}ACP provider${c.reset}, or ${c.bold}Claude Code${c.reset} on your computer — with your skills,`);
-  console.log(`  tools, and context — and sends the result back to you.`);
+  console.log(`  ClaudeClaw bridges ${c.bold}Claude Code${c.reset} to Telegram.`);
+  console.log(`  You message your bot from your phone. ClaudeClaw runs Claude`);
+  console.log(`  on your computer — with your skills, tools, and context —`);
+  console.log(`  and sends the result back to you.`);
   console.log();
   console.log(`  ${c.bold}It is not a chatbot wrapper.${c.reset} It runs a real local provider.`);
   console.log(`  Everything you can do in your terminal, you can do from your phone.`);
+  console.log();
+  console.log(`  ${c.gray}See the DISCLAIMER in README.md for non-Claude (ACP) providers.${c.reset}`);
   console.log();
 
   bullet('Text, voice, photos, documents, and videos');
@@ -421,8 +437,8 @@ async function main() {
   console.log(`  ${c.bold}FAQ${c.reset}`);
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Does this cost anything?`);
-  info('ClaudeClaw itself is free. Configure your selected provider on this machine:');
-  info('OpenCode/Gemini/custom ACP with their own provider keys, or Claude Code auth via claude login / ANTHROPIC_API_KEY.');
+  info('ClaudeClaw itself is free. Authenticate Claude on this machine via');
+  info('claude login (any plan), or set ANTHROPIC_API_KEY for pay-per-token.');
   info('Optional features (voice, video) have their own free tiers.');
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Does my computer need to stay on?`);
@@ -436,8 +452,9 @@ async function main() {
   info('shut everything down instantly from your phone.');
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Can I run this on a server / VPS?`);
-  info('Yes. Configure the selected provider on the server first. For ACP providers,');
-  info('install/authenticate the command there. For Claude Code, use claude login or ANTHROPIC_API_KEY.');
+  info('Yes. Authenticate Claude on the server first via claude login,');
+  info('or set ANTHROPIC_API_KEY for pay-per-token. See the README cloud');
+  info('deployment section for long-lived OAuth tokens.');
   console.log();
 
   const understood = await confirm('Ready to continue?');
@@ -1386,9 +1403,7 @@ async function main() {
 
   ok(`Bot: @${botUsername || '(configure TELEGRAM_BOT_TOKEN)'}`);
   env.ALLOWED_CHAT_ID ? ok(`Chat ID: ${env.ALLOWED_CHAT_ID}`) : warn('Chat ID: not set (bot will tell you on first message)');
-  selectedProvider === 'opencode'
-    ? ok('Provider: OpenCode (keys/models managed by OpenCode)')
-    : env.ANTHROPIC_API_KEY ? ok('Provider: Claude Code API key (pay-per-token)') : ok('Provider: Claude Code login / subscription');
+  env.ANTHROPIC_API_KEY ? ok('Provider: Claude Code API key (pay-per-token)') : ok('Provider: Claude Code login / subscription');
   wantVoiceIn && env.GROQ_API_KEY ? ok('Voice input: Groq Whisper ✓') : wantVoiceIn ? warn('Voice input: GROQ_API_KEY not set') : info('Voice input: not enabled');
   wantVoiceOut && env.ELEVENLABS_API_KEY ? ok('Voice output: ElevenLabs ✓') : wantVoiceOut ? warn('Voice output: ElevenLabs keys not set') : info('Voice output: not enabled');
   wantVideo && env.GOOGLE_API_KEY ? ok('Video analysis: Gemini ✓') : wantVideo ? warn('Video analysis: GOOGLE_API_KEY not set') : info('Video analysis: not enabled');

@@ -13,6 +13,7 @@ import {
   ProviderRuntimeMode,
   ProviderThinkingMode,
   decodeProviderSession,
+  effectiveSkipPermissions,
   encodeProviderSession,
   sessionBelongsToProvider,
 } from './provider.js';
@@ -159,6 +160,15 @@ function thinkingForMode(
  * @param onTyping   Called every TYPING_REFRESH_MS while waiting — sends typing action to Telegram
  * @param onProgress Called when sub-agents start/complete — sends status updates to Telegram
  */
+/**
+ * Per-turn tool restriction passed by chat call sites. Mission tasks and
+ * scheduled jobs should leave this undefined so they keep full tool access.
+ */
+export interface AgentToolPolicy {
+  allowedTools?: string[];
+  disallowedTools?: string[];
+}
+
 export async function runAgent(
   message: string,
   sessionId: string | undefined,
@@ -169,6 +179,7 @@ export async function runAgent(
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
+  toolPolicy?: AgentToolPolicy,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -225,7 +236,7 @@ export async function runAgent(
       cwd: agentCwd ?? PROJECT_ROOT,
       settingSources: ['project', 'user'],
       permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
       ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
       env: sdkEnv,
       ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
@@ -235,6 +246,8 @@ export async function runAgent(
       ...(provider.thinkingMode ? { thinkingMode: provider.thinkingMode } : {}),
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
+      ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
+      ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
       abortController,
     })) {
       if (event.type === 'session') {
@@ -345,6 +358,7 @@ export async function runAgentWithRetry(
   fallbackModels?: string[],
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
+  toolPolicy?: AgentToolPolicy,
 ): Promise<AgentResult> {
   let lastError: AgentError | undefined;
 
@@ -361,6 +375,7 @@ export async function runAgentWithRetry(
         currentModel, abortController, onStreamText,
         mcpAllowlist,
         providerConfig,
+        toolPolicy,
       );
     } catch (err) {
       if (!(err instanceof AgentError)) throw err;

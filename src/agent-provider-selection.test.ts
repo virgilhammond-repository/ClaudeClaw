@@ -42,6 +42,7 @@ vi.mock('./provider.js', () => ({
   sessionBelongsToProvider: vi.fn(() => false),
   decodeProviderSession: vi.fn((_, sessionId) => sessionId),
   encodeProviderSession: vi.fn((provider, sessionId) => sessionId ? `${provider.type}:${sessionId}` : undefined),
+  effectiveSkipPermissions: vi.fn((provider) => provider.dangerouslySkipPermissions ?? provider.type === 'claude'),
 }));
 
 vi.mock('./agent-engine/index.js', () => ({
@@ -76,5 +77,30 @@ describe('runAgent provider selection', () => {
 
     expect(state.capturedInputs[0].provider).toEqual({ type: 'claude' });
     expect(state.capturedInputs[0].model).toBe('claude-opus-4-6');
+  });
+
+  it('forwards an explicit toolPolicy to the engine', async () => {
+    await runAgent(
+      'chat msg',
+      undefined,
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { type: 'codex' },
+      { allowedTools: ['Read', 'Grep', 'Glob'] },
+    );
+
+    expect(state.capturedInputs[0].allowedTools).toEqual(['Read', 'Grep', 'Glob']);
+    expect(state.capturedInputs[0].disallowedTools).toBeUndefined();
+  });
+
+  it('omits allowedTools/disallowedTools when no toolPolicy is passed (mission tasks keep full access)', async () => {
+    await runAgent('scheduled task', undefined, () => {});
+
+    expect(state.capturedInputs[0].allowedTools).toBeUndefined();
+    expect(state.capturedInputs[0].disallowedTools).toBeUndefined();
   });
 });

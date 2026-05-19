@@ -1,7 +1,12 @@
 import { PROJECT_ROOT, agentCwd } from './config.js';
 import { AcpEngineAdapter } from './agent-engine/index.js';
 import type { AgentProgressEvent, AgentResult } from './agent.js';
-import { DEFAULT_CODEX_MODEL, type ProviderConfig } from './provider.js';
+import { DEFAULT_CODEX_MODEL, effectiveSkipPermissions, type ProviderConfig } from './provider.js';
+
+export interface AcpToolPolicy {
+  allowedTools?: string[];
+  disallowedTools?: string[];
+}
 
 export async function runAcpAgent(
   provider: ProviderConfig,
@@ -10,6 +15,7 @@ export async function runAcpAgent(
   onProgress?: (event: AgentProgressEvent) => void,
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
+  toolPolicy?: AcpToolPolicy,
 ): Promise<AgentResult> {
   const engine = new AcpEngineAdapter();
   let text: string | null = null;
@@ -26,7 +32,9 @@ export async function runAcpAgent(
     ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(provider.runtimeMode ? { runtimeMode: provider.runtimeMode } : {}),
     ...(provider.thinkingMode ? { thinkingMode: provider.thinkingMode } : {}),
-    allowDangerouslySkipPermissions: true,
+    allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
+    ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
+    ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
     abortController,
   })) {
     if (event.type === 'session') newSessionId = event.sessionId;
