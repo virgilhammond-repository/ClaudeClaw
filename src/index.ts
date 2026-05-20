@@ -18,7 +18,7 @@ import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { getMainProviderConfig } from './provider.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
-import { getVenvPython, killProcess } from './platform.js';
+import { getVenvPython, IS_WINDOWS, killProcess, tmpDir } from './platform.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -208,22 +208,41 @@ async function main(): Promise<void> {
       // Shared helper so agent-create can call it too on new/delete.
       refreshWarRoomRoster();
 
+      // Detect uv for better error messages (used in both branches below)
+      const { spawnSync } = await import('child_process');
+      let uvAvailable = false;
+      try { uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe', windowsHide: true }).status === 0; } catch { /* */ }
+      if (uvAvailable) logger.info('uv detected — will use uv commands in War Room instructions');
+
       if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
         // Pre-flight: verify Python dependencies are actually installed
-        const { spawnSync } = await import('child_process');
-        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+
+        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000, windowsHide: true });
         if (depCheck.status !== 0) {
-          const msg = 'War Room Python dependencies not installed. Run:\n\n'
-            + 'source warroom/.venv/bin/activate\n'
-            + 'pip install -r warroom/requirements.txt\n\n'
-            + 'Then restart the bot.';
+          const msg = uvAvailable
+            ? 'War Room Python dependencies not installed. Run:\n\n'
+              + `uv pip install --python ${venvPython} -r warroom/requirements.txt\n\n`
+              + 'Then restart the bot.'
+            : IS_WINDOWS
+              ? 'War Room Python dependencies not installed. Run:\n\n'
+                + 'In PowerShell:\n'
+                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
+                + 'Or in Command Prompt:\n'
+                + '  warroom\\.venv\\Scripts\\activate.bat\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
+                + 'Then restart the bot.'
+              : 'War Room Python dependencies not installed. Run:\n\n'
+                + 'source warroom/.venv/bin/activate\n'
+                + 'pip install -r warroom/requirements.txt\n\n'
+                + 'Then restart the bot.';
           logger.error(msg);
           if (ALLOWED_CHAT_ID) {
             bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room could not start.\n\n${msg}`).catch(() => {});
           }
         } else {
         // Dedicated log file for the warroom subprocess
-        const warroomLogPath = '/tmp/warroom-debug.log';
+        const warroomLogPath = path.join(tmpDir(), 'warroom-debug.log');
         let warroomLogFd: number | null = null;
         try {
           warroomLogFd = fs.openSync(warroomLogPath, 'a');
@@ -248,6 +267,7 @@ async function main(): Promise<void> {
             cwd: PROJECT_ROOT,
             env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
             stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
           });
           currentProc = proc;
 
@@ -286,9 +306,9 @@ async function main(): Promise<void> {
             } else {
               respawnAttempts += 1;
               if (respawnAttempts > MAX_CRASH_RESPAWNS) {
-                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check /tmp/warroom-debug.log for errors.`);
+                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check ${warroomLogPath} for errors.`);
                 if (ALLOWED_CHAT_ID) {
-                  bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck /tmp/warroom-debug.log, fix the issue, and restart the bot.`).catch(() => {});
+                  bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck ${warroomLogPath}, fix the issue, and restart the bot.`).catch(() => {});
                 }
                 return;
               }
@@ -315,7 +335,18 @@ async function main(): Promise<void> {
         const missingVenv = !fs.existsSync(venvPython);
         const missingScript = !fs.existsSync(serverScript);
         const hint = missingVenv
-          ? 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
+          ? uvAvailable
+            ? 'Python venv not found. Run:\n\nuv venv warroom/.venv\nuv pip install --python warroom/.venv -r warroom/requirements.txt'
+            : IS_WINDOWS
+              ? 'Python venv not found. Run:\n\n'
+                + 'python -m venv warroom\\.venv\n\n'
+                + 'In PowerShell:\n'
+                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
+                + 'Or in Command Prompt:\n'
+                + '  warroom\\.venv\\Scripts\\activate.bat\n'
+                + '  pip install -r warroom\\requirements.txt'
+              : 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
           : 'warroom/server.py not found. Make sure the warroom/ directory exists.';
         logger.warn('War Room enabled but cannot start: %s', hint);
         if (ALLOWED_CHAT_ID) {
