@@ -328,7 +328,7 @@ function TextPane() {
           {list.map((m) => (
             <a
               key={m.id}
-              href={legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}`)}
+              href={legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}${m.ended_at !== null ? '&archive=1' : ''}`)}
               class="block bg-[var(--color-card)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] rounded-lg p-3 transition-colors"
             >
               <div class="flex items-center gap-2 mb-1">
