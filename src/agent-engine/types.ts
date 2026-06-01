@@ -1,0 +1,80 @@
+import type { ProviderConfig } from '../provider.js';
+
+export interface McpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface AgentEngineUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  totalCostUsd: number;
+  didCompact: boolean;
+  preCompactTokens: number | null;
+  lastCallCacheRead: number;
+  lastCallInputTokens: number;
+}
+
+export interface AgentEngineProgressEvent {
+  type: 'task_started' | 'task_completed' | 'tool_active' | 'plan';
+  description: string;
+  status?: string;
+  kind?: string;
+  toolCallId?: string;
+  locations?: Array<{ path: string; line?: number | null }>;
+  planEntries?: Array<{ content: string; status: string; priority?: string }>;
+}
+
+export interface AgentTurnInput {
+  prompt: string;
+  provider: ProviderConfig;
+  sessionId?: string;
+  cwd: string;
+  model?: string;
+  /** Raw provider-specific runtime/mode value selected in the dashboard. */
+  runtimeMode?: string;
+  /** Raw provider-specific thinking/thought-level value selected in the dashboard. */
+  thinkingMode?: string;
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' };
+  /** Claude SDK turn cap. ACP has no portable max-turns request field; ACP callers must also pass an abort timeout. */
+  maxTurns?: number;
+  permissionMode?: 'default' | 'bypassPermissions' | string;
+  allowDangerouslySkipPermissions?: boolean;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  mcpServers?: Record<string, McpStdioConfig>;
+  abortController?: AbortController;
+  env?: Record<string, string | undefined>;
+  settingSources?: string[];
+  includePartialMessages?: boolean;
+}
+
+export type AgentEngineEvent =
+  | { type: 'session'; sessionId: string; raw?: unknown }
+  | { type: 'text_delta'; delta: string; accumulatedText: string; raw?: unknown }
+  | { type: 'progress'; progress: AgentEngineProgressEvent; raw?: unknown }
+  | { type: 'usage'; usage: AgentEngineUsage; raw?: unknown }
+  | { type: 'compact'; preCompactTokens: number | null; trigger?: string; raw?: unknown }
+  | { type: 'result'; text: string | null; usage: AgentEngineUsage | null; stopReason?: string; raw?: unknown }
+  | { type: 'aborted'; text: string | null; sessionId?: string; usage: AgentEngineUsage | null; raw?: unknown }
+  | { type: 'error'; error: unknown; raw?: unknown };
+
+export interface AgentEngine {
+  invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent>;
+}
+
+export function emptyUsage(): AgentEngineUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    totalCostUsd: 0,
+    didCompact: false,
+    preCompactTokens: null,
+    lastCallCacheRead: 0,
+    lastCallInputTokens: 0,
+  };
+}

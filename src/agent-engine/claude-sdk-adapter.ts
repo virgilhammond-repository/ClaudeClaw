@@ -1,0 +1,200 @@
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
+import { logger } from '../logger.js';
+import type { AgentEngine, AgentEngineEvent, AgentTurnInput } from './types.js';
+
+const TOOL_LABELS: Record<string, string> = {
+  Read: 'Reading file',
+  Write: 'Writing file',
+  Edit: 'Editing file',
+  Bash: 'Running command',
+  Grep: 'Searching code',
+  Glob: 'Finding files',
+  WebSearch: 'Web search',
+  WebFetch: 'Fetching page',
+  Agent: 'Sub-agent',
+  NotebookEdit: 'Editing notebook',
+  AskUserQuestion: 'User question',
+};
+
+function toolLabel(toolName: string): string {
+  if (TOOL_LABELS[toolName]) return TOOL_LABELS[toolName];
+  if (toolName.startsWith('mcp__')) {
+    const parts = toolName.split('__');
+    return parts.length >= 3 ? `${parts[1]}: ${parts.slice(2).join(' ')}` : toolName;
+  }
+  return toolName;
+}
+
+async function* singleTurn(text: string): AsyncGenerator<{
+  type: 'user';
+  message: { role: 'user'; content: string };
+  parent_tool_use_id: null;
+  session_id: string;
+}> {
+  yield {
+    type: 'user',
+    message: { role: 'user', content: text },
+    parent_tool_use_id: null,
+    session_id: '',
+  };
+}
+
+export class ClaudeSdkEngineAdapter implements AgentEngine {
+  async *invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent> {
+    let didCompact = false;
+    let preCompactTokens: number | null = null;
+    let lastCallCacheRead = 0;
+    let lastCallInputTokens = 0;
+    let streamedText = '';
+    let emittedResult = false;
+
+    try {
+      for await (const event of query({
+        prompt: singleTurn(input.prompt),
+        options: {
+          cwd: input.cwd,
+          resume: input.sessionId,
+          settingSources: input.settingSources ?? ['project', 'user'],
+          permissionMode: input.permissionMode ?? 'bypassPermissions',
+          ...(input.allowDangerouslySkipPermissions !== undefined
+            ? { allowDangerouslySkipPermissions: input.allowDangerouslySkipPermissions }
+            : {}),
+          ...(input.maxTurns && input.maxTurns > 0 ? { maxTurns: input.maxTurns } : {}),
+          ...(input.env ? { env: input.env } : {}),
+          ...(input.mcpServers && Object.keys(input.mcpServers).length ? { mcpServers: input.mcpServers } : {}),
+          ...(input.includePartialMessages ? { includePartialMessages: true } : {}),
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
+          ...(input.thinking ? { thinking: input.thinking } : {}),
+          ...(input.allowedTools ? { allowedTools: input.allowedTools } : {}),
+          ...(input.disallowedTools ? { disallowedTools: input.disallowedTools } : {}),
+          ...(input.abortController ? { abortController: input.abortController } : {}),
+        } as any,
+      })) {
+      const ev = event as Record<string, unknown>;
+
+      if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.session_id === 'string') {
+        yield { type: 'session', sessionId: ev.session_id, raw: ev };
+      }
+
+      if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
+        didCompact = true;
+        const meta = ev.compact_metadata as { trigger?: string; pre_tokens?: number } | undefined;
+        preCompactTokens = meta?.pre_tokens ?? null;
+        yield { type: 'compact', preCompactTokens, trigger: meta?.trigger, raw: ev };
+      }
+
+      if (ev.type === 'assistant') {
+        const msg = ev.message as Record<string, unknown> | undefined;
+        const msgUsage = msg?.usage as Record<string, number> | undefined;
+        const callCacheRead = msgUsage?.cache_read_input_tokens ?? 0;
+        const callInputTokens = msgUsage?.input_tokens ?? 0;
+        if (callCacheRead > 0) lastCallCacheRead = callCacheRead;
+        if (callInputTokens > 0) lastCallInputTokens = callInputTokens;
+
+        const content = msg?.content as Array<{ type: string; id?: string; name?: string }> | undefined;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'tool_use' && block.name) {
+              yield {
+                type: 'progress',
+                progress: {
+                  type: 'tool_active',
+                  description: toolLabel(block.name),
+                  toolCallId: block.id,
+                },
+                raw: ev,
+              };
+            }
+          }
+        }
+      }
+
+      if (ev.type === 'user') {
+        const msg = ev.message as Record<string, unknown> | undefined;
+        const content = msg?.content as Array<{ type: string; tool_use_id?: string }> | undefined;
+        if (Array.isArray(content) && content.some((block) => block.type === 'tool_result')) {
+          yield {
+            type: 'progress',
+            progress: {
+              type: 'task_completed',
+              description: 'Tool result',
+              toolCallId: content.find((block) => block.type === 'tool_result')?.tool_use_id,
+            },
+            raw: ev,
+          };
+        }
+      }
+
+      if (ev.type === 'system' && ev.subtype === 'task_started') {
+        yield {
+          type: 'progress',
+          progress: {
+            type: 'task_started',
+            description: (ev.description as string) ?? 'Sub-agent started',
+          },
+          raw: ev,
+        };
+      }
+
+      if (ev.type === 'system' && ev.subtype === 'task_notification') {
+        const summary = (ev.summary as string) ?? 'Sub-agent finished';
+        const status = (ev.status as string) ?? 'completed';
+        yield {
+          type: 'progress',
+          progress: {
+            type: 'task_completed',
+            description: status === 'failed' ? `Failed: ${summary}` : summary,
+          },
+          raw: ev,
+        };
+      }
+
+      if (ev.type === 'stream_event' && ev.parent_tool_use_id === null) {
+        const streamEvent = ev.event as Record<string, unknown> | undefined;
+        if (streamEvent?.type === 'message_start') streamedText = '';
+        if (streamEvent?.type === 'content_block_delta') {
+          const delta = streamEvent.delta as Record<string, unknown> | undefined;
+          if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+            streamedText += delta.text;
+            yield { type: 'text_delta', delta: delta.text, accumulatedText: streamedText, raw: ev };
+          }
+        }
+      }
+
+      if (ev.type === 'result') {
+        const evUsage = ev.usage as Record<string, number> | undefined;
+        const usage = evUsage ? {
+          inputTokens: evUsage.input_tokens ?? 0,
+          outputTokens: evUsage.output_tokens ?? 0,
+          cacheReadInputTokens: evUsage.cache_read_input_tokens ?? 0,
+          totalCostUsd: (ev.total_cost_usd as number) ?? 0,
+          didCompact,
+          preCompactTokens,
+          lastCallCacheRead,
+          lastCallInputTokens,
+        } : null;
+        if (usage) yield { type: 'usage', usage, raw: ev };
+        yield {
+          type: 'result',
+          text: (ev.result as string | null | undefined) ?? null,
+          usage,
+          stopReason: typeof ev.subtype === 'string' ? ev.subtype : undefined,
+          raw: ev,
+        };
+        emittedResult = true;
+      }
+      }
+    } catch (err) {
+      if (emittedResult) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : err },
+          'Claude SDK process errored after final result; keeping completed turn',
+        );
+        return;
+      }
+      throw err;
+    }
+  }
+}
