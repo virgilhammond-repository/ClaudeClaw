@@ -10,7 +10,7 @@
  */
 
 import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -149,7 +149,7 @@ export function executeEmergencyKill(): void {
           const cols = line.trim().split(/\s+/);
           const label = cols[cols.length - 1]; // label is the last column
           if (label && label.startsWith('com.claudeclaw.')) {
-            try { execSync(`launchctl stop "${label}"`, { stdio: 'ignore', timeout: 2000 }); } catch { /* ok */ }
+            try { spawnSync('launchctl', ['stop', label], { stdio: 'ignore', timeout: 2000 }); } catch { /* ok */ }
           }
         }
       } catch { /* launchctl failed, still exit */ }
