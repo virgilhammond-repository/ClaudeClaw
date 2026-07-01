@@ -15,6 +15,7 @@ vi.mock('./config.js', () => {
     get CLAUDECLAW_CONFIG() { return claudeclawConfig; },
     get PROJECT_ROOT() { return projectRoot; },
     get STORE_DIR() { return storeDir; },
+    get WARROOM_TMP_DIR() { return path.join(storeDir, 'tmp'); },
     DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
     CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
     CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
