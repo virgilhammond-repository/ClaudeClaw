@@ -53,7 +53,38 @@ const AUTH_PATTERNS = [
   'token expired',
   'invalid_grant',
   'login required',
+  'no credentials',
+  'please run claude login',
+  // The unauthenticated `claude` CLI returns a result (is_error:true) with this
+  // exact text rather than throwing — detected in claude-sdk-adapter (#48).
+  'not logged in',
+  'please run /login',
 ];
+
+// Shown for any auth failure. Covers both local (claude login) and the common
+// headless/cloud-deploy case where neither token env var is set (#48).
+const AUTH_FAILED_MESSAGE =
+  'Claude Code is not authenticated. Locally: run `claude login` (or `claude setup-token`). '
+  + 'On a headless / cloud deploy (Railway, Fly, Render): set CLAUDE_CODE_OAUTH_TOKEN '
+  + '(from `claude setup-token`) or ANTHROPIC_API_KEY in the environment.';
+
+/** True if error/result text indicates a Claude auth failure. Shared so the
+ *  SDK adapter can detect the is_error result-message case (#48), not just
+ *  thrown errors. */
+export function isAuthErrorText(text: string): boolean {
+  return matchesAny(text, AUTH_PATTERNS);
+}
+
+/** Standard non-retryable auth AgentError with deploy-aware guidance. */
+export function authError(original?: Error): AgentError {
+  return new AgentError('auth', {
+    shouldRetry: false,
+    shouldNewChat: false,
+    shouldSwitchModel: false,
+    retryAfterMs: 0,
+    userMessage: AUTH_FAILED_MESSAGE,
+  }, original);
+}
 
 const RATE_LIMIT_PATTERNS = [
   'rate limit',
@@ -167,6 +198,20 @@ export function classifyError(err: unknown, contextTokens?: number): AgentError 
     }, raw);
   }
 
+  // Missing/invalid Claude Code credentials surface as an immediate code-1
+  // exit. Classify as auth (no retry) BEFORE the generic crash branch below,
+  // otherwise ClaudeClaw retries a fundamentally unauthenticated subprocess
+  // forever with no actionable message — the common headless-deploy trap (#48).
+  if (matchesAny(text, AUTH_PATTERNS)) {
+    return new AgentError('auth', {
+      shouldRetry: false,
+      shouldNewChat: false,
+      shouldSwitchModel: false,
+      retryAfterMs: 0,
+      userMessage: AUTH_FAILED_MESSAGE,
+    }, raw);
+  }
+
   // Subprocess crash without context data
   if (text.includes('exited with code 1')) {
     return new AgentError('subprocess_crash', {
@@ -195,16 +240,6 @@ export function classifyError(err: unknown, contextTokens?: number): AgentError 
       shouldSwitchModel: false,
       retryAfterMs: 0,
       userMessage: providerStartMessage(commandFromStartError(text)),
-    }, raw);
-  }
-
-  if (matchesAny(text, AUTH_PATTERNS)) {
-    return new AgentError('auth', {
-      shouldRetry: false,
-      shouldNewChat: false,
-      shouldSwitchModel: false,
-      retryAfterMs: 0,
-      userMessage: 'Authentication failed. Run `claude login` in your terminal to re-authenticate.',
     }, raw);
   }
 

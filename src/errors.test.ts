@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyError, AgentError } from './errors.js';
+import { classifyError, AgentError, isAuthErrorText, authError } from './errors.js';
 
 describe('classifyError', () => {
   // ── Category detection ──────────────────────────────────────────────
@@ -34,6 +34,31 @@ describe('classifyError', () => {
   it('classifies OAuth token expired as auth', () => {
     const classified = classifyError(new Error('OAuth token expired'));
     expect(classified.category).toBe('auth');
+  });
+
+  it('classifies an unauthenticated code-1 exit as auth, not a retryable crash (#48)', () => {
+    // The Claude CLI exits with code 1 and an auth phrase when it has no
+    // credentials (headless deploy). This must NOT be a retryable subprocess
+    // crash, or ClaudeClaw retries forever with no actionable message.
+    const classified = classifyError(new Error('Command failed: claude exited with code 1\nNo credentials found, please run claude login'));
+    expect(classified.category).toBe('auth');
+    expect(classified.recovery.shouldRetry).toBe(false);
+    expect(classified.recovery.userMessage).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('isAuthErrorText detects the unauthenticated CLI result text (#48)', () => {
+    // Verified: an unauthenticated `claude` returns is_error result text
+    // "Not logged in · Please run /login". The SDK adapter uses this to raise
+    // an auth error at the source instead of surfacing it as a normal reply.
+    expect(isAuthErrorText('Not logged in · Please run /login')).toBe(true);
+    expect(isAuthErrorText('Here is your answer.')).toBe(false);
+  });
+
+  it('authError() is a non-retryable auth error with deploy guidance (#48)', () => {
+    const e = authError();
+    expect(e.category).toBe('auth');
+    expect(e.recovery.shouldRetry).toBe(false);
+    expect(e.recovery.userMessage).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 
   it('classifies billing errors', () => {
