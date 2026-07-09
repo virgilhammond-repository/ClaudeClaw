@@ -198,8 +198,11 @@ export const DASHBOARD_URL =
 export const DB_ENCRYPTION_KEY =
   process.env.DB_ENCRYPTION_KEY || envConfig.DB_ENCRYPTION_KEY || '';
 
-// Google API key for Gemini (memory extraction + consolidation)
+// Google API key for Gemini (memory extraction + consolidation).
+// Prefer the paid key (has billing/credit) over the free-tier key, which
+// hits 429 quota limits under sustained consolidation load.
 export const GOOGLE_API_KEY =
+  process.env.GOOGLE_API_KEY_PAID || envConfig.GOOGLE_API_KEY_PAID ||
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
 
 // Streaming strategy for progressive Telegram updates.
