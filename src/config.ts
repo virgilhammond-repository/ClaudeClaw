@@ -118,6 +118,14 @@ const __dirname = path.dirname(__filename);
 export const PROJECT_ROOT = path.resolve(__dirname, '..');
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 
+// War Room IPC scratch (roster + pin files shared with the Python voice
+// stack). Kept repo-relative under store/ — deliberately NOT under STORE_DIR's
+// optional CLAUDECLAW_STORE_DIR relocation — so the Node and Python sides
+// resolve the exact same absolute path without sharing the relocation logic.
+// Replaces the old hardcoded /tmp/, which on Windows resolved to the drive
+// root (D:\tmp). Mirrored in warroom/config.py.
+export const WARROOM_TMP_DIR = path.resolve(PROJECT_ROOT, 'store', 'tmp');
+
 // ── External config directory ────────────────────────────────────────
 // Personal config files (CLAUDE.md, agent.yaml, agent CLAUDE.md) can live
 // outside the repo in CLAUDECLAW_CONFIG (default ~/.claudeclaw) so they

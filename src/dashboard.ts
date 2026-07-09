@@ -7,7 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, ENABLE_ACP, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, updateAgentProvider } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, ENABLE_ACP, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, updateAgentProvider } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -912,11 +912,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   // ── War Room pin: route all voice utterances to a specific agent ──
-  // Lives in /tmp so the Python Pipecat server (a separate process) can
-  // read the state without needing an IPC bus. router.py checks this
-  // file's mtime and reloads only when it changes. Spoken agent prefixes
-  // (e.g. "research, find X") still take precedence over the pin.
-  const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
+  // Lives in store/tmp (WARROOM_TMP_DIR) so the Python Pipecat server (a
+  // separate process) can read the state without needing an IPC bus. router.py
+  // checks this file's mtime and reloads only when it changes. Spoken agent
+  // prefixes (e.g. "research, find X") still take precedence over the pin.
+  const WARROOM_PIN_PATH = path.join(WARROOM_TMP_DIR, 'warroom-pin.json');
   const VALID_PIN_MODES = new Set(['direct', 'auto']);
   // Recompute on every call so newly-created agents become pinnable
   // without a dashboard restart. listAgentIds() reads the agent-configs
@@ -980,6 +980,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
 
     try {
+      fs.mkdirSync(WARROOM_TMP_DIR, { recursive: true });
       fs.writeFileSync(
         WARROOM_PIN_PATH,
         JSON.stringify({ agent: nextAgent, mode: nextMode, pinnedAt: Date.now() }),

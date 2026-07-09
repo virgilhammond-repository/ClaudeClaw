@@ -29,6 +29,14 @@ PROJECT_ROOT = get_project_root()
 WARROOM_DIR = PROJECT_ROOT / "warroom"
 VOICES_FILE = WARROOM_DIR / "voices.json"
 
+# War Room IPC scratch shared with the Node side (src/config.ts: WARROOM_TMP_DIR).
+# Repo-relative under store/ so both processes resolve the same absolute path.
+# Replaces the old hardcoded /tmp/, which on Windows became the drive root
+# (D:\tmp). Node owns the writes; the voice stack only reads these.
+WARROOM_TMP_DIR = PROJECT_ROOT / "store" / "tmp"
+WARROOM_ROSTER_PATH = WARROOM_TMP_DIR / "warroom-agents.json"
+WARROOM_PIN_PATH = WARROOM_TMP_DIR / "warroom-pin.json"
+
 
 def load_voices() -> dict:
     """Load agent voice configs from voices.json.

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
+import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 import {
   ProviderConfig,
@@ -38,7 +38,7 @@ function mainConfigPath(): string {
 // roster changes (new agent, deleted agent). Read by the Python Pipecat
 // voice stack so new agents propagate into voice War Room without a
 // full bot restart.
-export const WARROOM_ROSTER_PATH = '/tmp/warroom-agents.json';
+export const WARROOM_ROSTER_PATH = path.join(WARROOM_TMP_DIR, 'warroom-agents.json');
 
 /** Single source of truth for "is this string a syntactically valid
  *  agent id?". Lifted out of the various inline copies in the dashboard
@@ -392,6 +392,7 @@ export function refreshWarRoomRoster(): void {
         return { id, name: capitalize(id), description: '' };
       }
     });
+    fs.mkdirSync(WARROOM_TMP_DIR, { recursive: true });
     fs.writeFileSync(WARROOM_ROSTER_PATH, JSON.stringify(roster, null, 2));
   } catch {
     // Non-fatal. Voice stack falls back to the built-in default roster

@@ -137,9 +137,9 @@ If you genuinely cannot decide between two agents, route to main and let main tr
 def _generate_persona(agent_id: str) -> str:
     """Generate a basic persona for agents not in the hardcoded list."""
     import json
-    from pathlib import Path
+    from config import WARROOM_ROSTER_PATH
     try:
-        roster = json.loads(Path("/tmp/warroom-agents.json").read_text())
+        roster = json.loads(WARROOM_ROSTER_PATH.read_text())
         for a in roster:
             if a["id"] == agent_id:
                 name = a.get("name", agent_id.title())
@@ -160,7 +160,7 @@ def _generate_persona(agent_id: str) -> str:
 def _build_auto_roster_block() -> str:
     """Build the agent roster lines for the auto-router persona from the dynamic roster file."""
     import json
-    from pathlib import Path
+    from config import WARROOM_ROSTER_PATH
     _known = {
         "main": "Hand of the King. General ops, triage, anything that doesn't clearly fit another agent.",
         "research": "Grand Maester. Deep web research, academic sources, competitive intel, trend analysis.",
@@ -169,7 +169,7 @@ def _build_auto_roster_block() -> str:
         "ops": "Master of War. Calendar, scheduling, cron, system operations, MCP tool work, automations.",
     }
     try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
+        agents = json.loads(WARROOM_ROSTER_PATH.read_text())
         lines = []
         for a in agents:
             aid = a["id"]

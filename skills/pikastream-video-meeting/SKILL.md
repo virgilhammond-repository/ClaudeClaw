@@ -80,7 +80,7 @@ If `life/voice_config.json` is missing or unreadable, use the voice ID from `lif
 
 1. Read your workspace files (MEMORY.md, daily logs, identity files, etc.).
 2. If no workspace data is available, ask the user: `What name should the bot use in this meeting?` Use their answer for the `Name:` field. Fill in any other sections you know from the conversation.
-3. Synthesize a concise reference card to `/tmp/meeting_system_prompt.txt`. Use `{name}` as the bot's display name (also used as `--bot-name`). If data is thin (e.g. only a name), keep it short — don't pad with filler.
+3. Synthesize a concise reference card to `meeting_system_prompt.txt` in your working directory (avoid `/tmp/` — it is not cross-platform and resolves to the drive root, e.g. `D:\tmp`, on Windows). Use `{name}` as the bot's display name (also used as `--bot-name`). If data is thin (e.g. only a name), keep it short — don't pad with filler.
 
 ```
 Synthesize the raw data below into a concise reference card for {name} to use during a voice/video call. Use third-person ("{name}") throughout. Prioritize CONCRETE DETAILS.
@@ -123,7 +123,7 @@ RULES:
 python $SKILL_DIR/scripts/pikastreaming_videomeeting.py join \
   --meet-url <url> --bot-name <name> \
   --image identity/videomeeting-avatar.png \
-  --system-prompt-file /tmp/meeting_system_prompt.txt \
+  --system-prompt-file meeting_system_prompt.txt \
   --voice-id <id> [--meeting-password <pw>]
 ```
 

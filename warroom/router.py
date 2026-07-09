@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from config import WARROOM_ROSTER_PATH, WARROOM_PIN_PATH
+
 from pipecat.frames.frames import (
     DataFrame,
     InterimTranscriptionFrame,
@@ -32,14 +34,14 @@ logger = logging.getLogger("warroom.router")
 # Shared state with the dashboard (src/dashboard.ts POST /api/warroom/pin).
 # Writing via the dashboard; reading here. The Pipecat server and the Hono
 # dashboard are separate processes, so we use this tiny file as IPC.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+PIN_PATH = WARROOM_PIN_PATH
 
 # Live roster snapshot written by Node-side refreshWarRoomRoster(). Pipecat
 # used to hardcode AGENT_NAMES which silently broke name-prefix routing for
 # user-created agents. We now mtime-cache the roster file and rebuild the
 # regex when the roster changes, so a new agent in the dashboard immediately
 # becomes addressable by voice prefix ("hey analytics, ...").
-ROSTER_PATH = Path("/tmp/warroom-agents.json")
+ROSTER_PATH = WARROOM_ROSTER_PATH
 
 # Default fallback if the roster file is missing/unreadable. Matches the
 # bundled built-in agents so a fresh install still routes correctly.

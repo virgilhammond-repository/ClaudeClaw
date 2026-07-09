@@ -94,7 +94,7 @@ except ModuleNotFoundError as e:
     )
     sys.exit(1)
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, WARROOM_ROSTER_PATH, WARROOM_PIN_PATH
 
 
 logging.basicConfig(
@@ -173,7 +173,7 @@ VOICE_BRIDGE = PROJECT_ROOT / "dist" / "agent-voice-bridge.js"
 # Load agent roster dynamically from the file Node writes on startup.
 # Falls back to the default 5 if the file doesn't exist.
 def _load_agent_roster():
-    roster_path = Path("/tmp/warroom-agents.json")
+    roster_path = WARROOM_ROSTER_PATH
     try:
         if roster_path.exists():
             agents = json.loads(roster_path.read_text())
@@ -331,9 +331,9 @@ async def list_agents_handler(params):
         "ops": "Master of War. Calendar, scheduling, internal tools, automations.",
     }
     roster = {}
-    # Start with dynamic roster from /tmp/warroom-agents.json
+    # Start with dynamic roster from the shared War Room scratch file
     try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
+        agents = json.loads(WARROOM_ROSTER_PATH.read_text())
         for a in agents:
             aid = a["id"]
             roster[aid] = _known_descriptions.get(aid, a.get("description", "Specialist agent"))
@@ -481,7 +481,7 @@ async def answer_as_agent_handler(params):
 # ─── Mode 1: Gemini Live (speech-to-speech + tools) ────────────────────────
 
 # Shared with the dashboard — any HTTP POST to /api/warroom/pin writes here.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+PIN_PATH = WARROOM_PIN_PATH
 
 VALID_MODES = {"direct", "auto"}
 

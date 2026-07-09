@@ -40,7 +40,7 @@ When the user asks you to create a file and send it back (PDF, spreadsheet, imag
 **Example:**
 ```
 Here's the report you asked for.
-[SEND_FILE:/tmp/q1-report.pdf|Q1 2026 Report]
+[SEND_FILE:/path/to/q1-report.pdf|Q1 2026 Report]
 Let me know if you need any tweaks.
 ```
 
