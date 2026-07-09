@@ -44,19 +44,67 @@ def embed_query(text):
     return result.embeddings[0].values
 
 
-def query(text, n=5, source_type=None):
+# Reranking: pull a wider candidate set from the vector store, then re-score
+# with a cross-encoder that reads query+passage together (far more precise than
+# cosine similarity alone). Retrieval stays fast; only the shortlist is reranked.
+RERANK_CANDIDATES = 24
+_ranker = None
+
+
+def _get_ranker():
+    global _ranker
+    if _ranker is None:
+        from flashrank import Ranker
+        # Compact cross-encoder (~4MB), cached under the project after first download.
+        # Upgrade to "ms-marco-MiniLM-L-12-v2" for higher precision when bandwidth allows.
+        _ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2",
+                         cache_dir=str(ROOT / "store" / "reranker"))
+    return _ranker
+
+
+def query(text, n=5, source_type=None, rerank=True):
     collection = get_collection()
     embedding = embed_query(text)
 
+    # When reranking, over-fetch candidates so the cross-encoder has room to reorder.
+    fetch_n = max(n, RERANK_CANDIDATES) if rerank else n
     kwargs = {
         "query_embeddings": [embedding],
-        "n_results": min(n, collection.count()),
+        "n_results": min(fetch_n, collection.count()),
         "include": ["documents", "metadatas", "distances"],
     }
     if source_type:
         kwargs["where"] = {"source_type": source_type}
 
-    return collection.query(**kwargs)
+    results = collection.query(**kwargs)
+
+    if not rerank or not results["documents"][0]:
+        # Trim to n if we over-fetched but aren't reranking.
+        for key in ("documents", "metadatas", "distances"):
+            results[key][0] = results[key][0][:n]
+        return results
+
+    return _rerank(text, results, n)
+
+
+def _rerank(text, results, n):
+    from flashrank import RerankRequest
+    docs = results["documents"][0]
+    metas = results["metadatas"][0]
+    dists = results["distances"][0]
+
+    passages = [{"id": i, "text": doc} for i, doc in enumerate(docs)]
+    ranked = _get_ranker().rerank(RerankRequest(query=text, passages=passages))
+
+    top = ranked[:n]
+    order = [item["id"] for item in top]
+    # rerank score in [0,1]; expose it via distance so relevance% = (1-dist)*100 reflects it.
+    return {
+        "documents": [[docs[i] for i in order]],
+        "metadatas": [[metas[i] for i in order]],
+        "distances": [[1.0 - float(top[k]["score"]) for k in range(len(order))]],
+        "embedding_distances": [[dists[i] for i in order]],
+    }
 
 
 def format_results(results, snippet_len=600):
@@ -106,6 +154,7 @@ def main():
     parser.add_argument("--books", action="store_true", help="Search books only")
     parser.add_argument("--transcripts", action="store_true", help="Search transcripts only")
     parser.add_argument("--stats", action="store_true", help="Show knowledge base stats")
+    parser.add_argument("--no-rerank", action="store_true", help="Skip cross-encoder reranking (faster, less precise)")
     args = parser.parse_args()
 
     if args.stats:
@@ -123,7 +172,7 @@ def main():
         source_type = "transcript"
 
     try:
-        results = query(args.query_text, n=args.n, source_type=source_type)
+        results = query(args.query_text, n=args.n, source_type=source_type, rerank=not args.no_rerank)
         print(format_results(results))
     except Exception as e:
         if "does not exist" in str(e):
